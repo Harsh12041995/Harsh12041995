@@ -6,7 +6,7 @@ export interface ChatMessage {
 }
 
 export interface AIService {
-  generateReply(contactId: string, userMessage: string, customPrompt?: string): Promise<string>;
+  generateReply(accountId: string, contactId: string, userMessage: string, customPrompt?: string): Promise<string>;
   listModels(): Promise<string[]>;
   setModel(model: string): void;
   getModel(): string;

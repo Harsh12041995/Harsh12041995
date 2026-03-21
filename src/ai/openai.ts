@@ -15,12 +15,26 @@ export class OpenAIService implements AIService {
       'You are a helpful WhatsApp assistant. Keep replies concise and conversational.';
   }
 
-  async generateReply(contactId: string, userMessage: string, customPrompt?: string): Promise<string> {
+  async generateReply(accountId: string, contactId: string, userMessage: string, customPrompt?: string): Promise<string> {
     if (!this.apiKey) {
       return '⚠️ Cloud AI Provider is active but no API Key is set. Please configure an API Key in the dashboard.';
     }
 
-    const history = this.getHistory(contactId);
+    const historyKey = `${accountId}:${contactId}`;
+    const history = this.getHistory(historyKey);
+
+    // If history is empty, try to populate it from the database
+    if (history.length === 0) {
+      const { Chat } = await import('../models/Chat');
+      const savedMessages = await Chat.find({ accountId, from: contactId }).sort({ ts: -1 }).limit(this.MAX_HISTORY);
+      
+      for (const msg of savedMessages.reverse()) {
+        history.push({ role: 'user', content: msg.body });
+        history.push({ role: 'assistant', content: msg.reply });
+      }
+    }
+
+    // Add the new user message to history
     history.push({ role: 'user', content: userMessage });
 
     const messages: ChatMessage[] = [
@@ -45,7 +59,7 @@ export class OpenAIService implements AIService {
 
       const reply = response.data.choices[0].message.content.trim();
       history.push({ role: 'assistant', content: reply });
-      this.trimHistory(contactId);
+      this.trimHistory(historyKey); // ✅ Fix: was contactId (wrong), now historyKey (correct)
 
       return reply;
     } catch (error: any) {
@@ -81,10 +95,10 @@ export class OpenAIService implements AIService {
     return this.histories.get(contactId)!;
   }
 
-  private trimHistory(contactId: string): void {
-    const history = this.histories.get(contactId);
+  private trimHistory(historyKey: string): void {
+    const history = this.histories.get(historyKey);
     if (history && history.length > this.MAX_HISTORY * 2) {
-      this.histories.set(contactId, history.slice(-this.MAX_HISTORY * 2));
+      this.histories.set(historyKey, history.slice(-this.MAX_HISTORY * 2));
     }
   }
 }

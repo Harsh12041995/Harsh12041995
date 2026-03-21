@@ -9,4 +9,7 @@ const ChatSchema = new mongoose.Schema({
   ts: { type: Date, default: Date.now }
 });
 
+// ✅ Task 3.1 — Index for fast contact history queries (accountId + contact + time)
+ChatSchema.index({ accountId: 1, from: 1, ts: -1 });
+
 export const Chat = mongoose.model('Chat', ChatSchema);

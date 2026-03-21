@@ -1,333 +1,653 @@
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { QRCodeCanvas } from 'qrcode.react';
 
+// ✅ Task 4.1 — Properly typed via src/vite-env.d.ts (no more 'as any' hack)
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 interface LogEntry {
-  _id: string;
-  from: string;
-  body: string;
-  reply: string;
-  model: string;
-  ts: string;
-  accountId: string;
+  _id: string; from: string; body: string; reply: string; model: string; ts: string; accountId: string;
+}
+
+interface Contact {
+  contactId: string;
+  name?: string;
+  pushname?: string;
+  prompt?: string;
+  context?: string;
+  unreadCount?: number;
 }
 
 interface WhatsAppAccount {
   sessionId: string;
   phoneNumber?: string;
   status: string;
+  provider: string;
+  model: string;
+  apiKey?: string;
+  qrCode?: string | null;
+  lastActive?: string | null;
 }
 
 interface BotStatus {
+  sessionId?: string | null;
   bot: string;
   model: string;
   availableModels: string[];
   provider: 'ollama' | 'openai';
+  phoneNumber?: string;
+  qr?: string | null;
+  lastActive?: string | null;
 }
 
-type View = 'chats' | 'settings';
+interface Analytics {
+  totalMessages: number;
+  modelStats: { _id: string; count: number }[];
+  dailyStats: { _id: string; count: number }[];
+}
+
+type View = 'chats' | 'settings' | 'analytics' | 'database';
 
 const STATUS_COLOR: Record<string, string> = {
-  ready: '#22c55e',
-  qr: '#f59e0b',
-  starting: '#94a3b8',
-  disconnected: '#ef4444',
+  ready: '#22c55e', qr: '#f59e0b', starting: '#94a3b8', disconnected: '#ef4444',
 };
 
 export default function App() {
   const [accounts, setAccounts] = useState<WhatsAppAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LogEntry[]>([]);
-  const [status, setStatus] = useState<BotStatus>({ 
-    bot: 'disconnected', model: '—', availableModels: [], provider: 'ollama' 
+  const [status, setStatus] = useState<BotStatus>({
+    sessionId: null,
+    bot: 'disconnected',
+    model: '—',
+    availableModels: [],
+    provider: 'ollama',
+    phoneNumber: 'Not Linked',
+    qr: null,
+    lastActive: null
   });
+  const [qrCodes, setQrCodes] = useState<Record<string, string>>({});
   const [view, setView] = useState<View>('chats');
-  const [selectedContact, setSelectedContact] = useState<string | null>(null);
-  const [contacts, setContacts] = useState<string[]>([]);
-  const [switching, setSwitching] = useState(false);
-  const [apiKey, setApiKey] = useState('');
-  const [editingPrompt, setEditingPrompt] = useState<{ id: string; prompt: string; context: string } | null>(null);
+  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [summary, setSummary] = useState<string>('Click "Refresh" to generate summary...');
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('theme') as any) || 'dark');
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [schema, setSchema] = useState<any>(null);
+  const [systemStatus, setSystemStatus] = useState<any>(null);
+  
+  // Local state for editing contact context
+  const [editPrompt, setEditPrompt] = useState('');
+  const [editContext, setEditContext] = useState('');
+  const [editName, setEditName] = useState('');
+
   const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const fetchAccounts = async () => {
+    const res = await fetch(`${API}/api/accounts`);
+    const data: WhatsAppAccount[] = await res.json();
+    setAccounts(data);
+    setSelectedAccountId((prev) => {
+      if (data.length === 0) return prev;
+      if (prev && data.some((account) => account.sessionId === prev)) return prev;
+      return data[0].sessionId;
+    });
+  };
+
+  const fetchStatus = async (accountId = selectedAccountId) => {
+    if (!accountId) return;
+
+    const [statusRes, contactsRes, messagesRes] = await Promise.all([
+      fetch(`${API}/api/status?accountId=${accountId}`),
+      fetch(`${API}/api/contacts?accountId=${accountId}`),
+      fetch(`${API}/api/messages?accountId=${accountId}`)
+    ]);
+
+    const nextStatus: BotStatus = await statusRes.json();
+    const nextContacts: Contact[] = await contactsRes.json();
+    const nextMessages: LogEntry[] = await messagesRes.json();
+
+    setStatus(nextStatus);
+    setContacts(nextContacts);
+    setMessages(nextMessages);
+    setQrCodes((prev) => {
+      const next = { ...prev };
+      if (nextStatus.qr) next[accountId] = nextStatus.qr;
+      else delete next[accountId];
+      return next;
+    });
+  };
 
   useEffect(() => {
     const sock = io(API);
     socketRef.current = sock;
     
-    sock.on('new_message', (entry: LogEntry) => {
+    sock.on('connect', () => console.log('[Socket] Connected to backend'));
+    
+    return () => {
+      sock.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    const sock = socketRef.current;
+    if (!sock) return;
+
+    const handleNewMessage = (payload: any) => {
+      const entry: LogEntry = payload.accountId ? payload : payload;
+      const contact: Contact | undefined = payload.contact;
+
       if (entry.accountId === selectedAccountId) {
         setMessages((prev) => [...prev, entry]);
-        setContacts((prev) => Array.from(new Set([entry.from, ...prev])));
+        
+        setContacts((prev) => {
+          const exists = prev.find(c => c.contactId === entry.from);
+          if (exists) {
+            const isSelected = selectedContact?.contactId === entry.from;
+            return prev.map(c => c.contactId === entry.from ? { 
+              ...c, 
+              ...contact,
+              unreadCount: isSelected ? 0 : (c.unreadCount || 0) + 1 
+            } : c);
+          }
+          return [{ ...(contact || { contactId: entry.from }), unreadCount: 1 }, ...prev];
+        });
+
+        if (selectedContact && entry.from === selectedContact.contactId) {
+          fetchSummary(entry.from);
+        }
       }
-    });
+    };
 
-    sock.on('account_status', ({ sessionId, status, qr }: { sessionId: string; status: string; qr?: string }) => {
-      setAccounts(prev => prev.map(a => a.sessionId === sessionId ? { ...a, status } : a));
-    });
+    const handleAccountStatus = ({ sessionId, status, qr }: { sessionId: string; status: string; qr?: string | null }) => {
+      setAccounts((prev) => {
+        const existingIndex = prev.findIndex((account) => account.sessionId === sessionId);
+        const nextAccount: WhatsAppAccount = existingIndex >= 0
+          ? {
+              ...prev[existingIndex],
+              status,
+              qrCode: qr ?? null,
+              lastActive: new Date().toISOString()
+            }
+          : {
+              sessionId,
+              status,
+              provider: 'ollama',
+              model: '',
+              phoneNumber: 'Not Linked',
+              qrCode: qr ?? null,
+              lastActive: new Date().toISOString()
+            };
 
-    sock.on('model_changed', ({ model }: { model: string }) => setStatus((prev) => ({ ...prev, model })));
-    sock.on('provider_changed', ({ provider }: { provider: 'ollama' | 'openai' }) => {
-      setStatus((prev) => ({ ...prev, provider }));
-      fetchStatus();
-    });
+        if (existingIndex === -1) return [nextAccount, ...prev];
+        return prev.map((account, index) => index === existingIndex ? nextAccount : account);
+      });
 
-    return () => { sock.disconnect(); };
-  }, [selectedAccountId]);
+      setQrCodes((prev) => {
+        const next = { ...prev };
+        if (qr) next[sessionId] = qr;
+        else delete next[sessionId];
+        return next;
+      });
 
-  const fetchAccounts = async () => {
-    const res = await fetch(`${API}/api/accounts`);
+      if (!selectedAccountId || sessionId === selectedAccountId) {
+        fetchStatus(sessionId);
+      }
+    };
+
+    sock.on('new_message', handleNewMessage);
+    sock.on('account_status', handleAccountStatus);
+
+    return () => {
+      sock.off('new_message', handleNewMessage);
+      sock.off('account_status', handleAccountStatus);
+    };
+  }, [selectedAccountId, selectedContact]);
+
+  useEffect(() => {
+    if (bottomRef.current) bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const fetchSummary = async (id: string) => {
+    if (!selectedAccountId) return;
+    const res = await fetch(`${API}/api/summarize/${id}?accountId=${selectedAccountId}`);
     const data = await res.json();
-    setAccounts(data);
-    if (data.length > 0 && !selectedAccountId) setSelectedAccountId(data[0].sessionId);
+    setSummary(data.summary || 'Summary unavailable.');
   };
 
-  const fetchStatus = () => {
-    if (!selectedAccountId) return;
-    fetch(`${API}/api/status?accountId=${selectedAccountId}`).then(r => r.json()).then(s => setStatus(s)).catch(() => {});
-    fetch(`${API}/api/contacts?accountId=${selectedAccountId}`).then(r => r.json()).then(c => {
-      setContacts(c);
-      if (c.length > 0 && !selectedContact) setSelectedContact(c[0]);
-    }).catch(() => {});
-    fetch(`${API}/api/messages?accountId=${selectedAccountId}`).then(r => r.json()).then(m => setMessages(m)).catch(() => {});
+  const fetchAnalytics = async () => {
+    const res = await fetch(`${API}/api/analytics${selectedAccountId ? `?accountId=${selectedAccountId}` : ''}`);
+    const data = await res.json();
+    setAnalytics(data);
+  };
+
+  const fetchSchemaAndSystem = async () => {
+    const sRes = await fetch(`${API}/api/schema`);
+    const sysRes = await fetch(`${API}/api/system-status`);
+    setSchema(await sRes.json());
+    setSystemStatus(await sysRes.json());
   };
 
   useEffect(() => { fetchAccounts(); }, []);
   useEffect(() => { fetchStatus(); }, [selectedAccountId]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, selectedContact]);
+  useEffect(() => { if (view === 'analytics') fetchAnalytics(); }, [view, selectedAccountId]);
+  useEffect(() => { if (view === 'database') fetchSchemaAndSystem(); }, [view, selectedAccountId]);
 
-  const switchModel = async (model: string) => {
-    setSwitching(true);
-    await fetch(`${API}/api/model`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
-    setSwitching(false);
-  };
-
-  const switchProvider = async (provider: 'ollama' | 'openai') => {
-    setSwitching(true);
-    await fetch(`${API}/api/provider`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }) });
-    setSwitching(false);
-  };
-
-  const saveConfig = async () => {
-    if (!apiKey) return;
-    await fetch(`${API}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey }) });
-    alert('API Key Saved');
-  };
-
-  const openPromptEditor = async (id: string) => {
-    try {
-      const res = await fetch(`${API}/api/contact-prompt/${id}?accountId=${selectedAccountId}`);
-      const data = await res.json();
-      setEditingPrompt({ id, prompt: data.prompt || '', context: data.context || '' });
-    } catch (err) {
-      setEditingPrompt({ id, prompt: '', context: '' });
-    }
-  };
-
-  const saveContactPrompt = async () => {
-    if (!editingPrompt || !selectedAccountId) return;
-    await fetch(`${API}/api/contact-prompt`, { 
-      method: 'POST', 
-      headers: { 'Content-Type': 'application/json' }, 
-      body: JSON.stringify({ 
+  const saveContactDetails = async () => {
+    if (!selectedContact || !selectedAccountId) return;
+    await fetch(`${API}/api/contact-prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: selectedContact.contactId,
         accountId: selectedAccountId,
-        id: editingPrompt.id, 
-        prompt: editingPrompt.prompt, 
-        context: editingPrompt.context 
-      }) 
+        prompt: editPrompt,
+        context: editContext,
+        name: editName
+      })
     });
-    setEditingPrompt(null);
-    alert('Custom behavior saved!');
+    
+    // Refresh contact in list
+    setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { ...c, name: editName, prompt: editPrompt, context: editContext } : c));
+    alert('Contact details saved!');
   };
 
-  const fmt = (ts: string | number) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-  // ── Sub-component: App Sidebar ──────────────────────────────────────────
-  const AppSidebar = () => (
-    <div style={{ width: 84, background: '#0f172a', borderRight: '1px solid #1e293b', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 0', gap: 32 }}>
-      {/* Brand */}
-      <div style={{ width: 44, height: 44, background: '#38bdf8', borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 900, color: '#0f172a', marginBottom: 12 }}>AI</div>
+  useEffect(() => {
+    if (selectedContact) {
+      setEditPrompt(selectedContact.prompt || '');
+      setEditContext(selectedContact.context || '');
+      setEditName(selectedContact.name || '');
       
-      {/* Account Switcher */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
-        {accounts.map(acc => (
-          <button
-            key={acc.sessionId}
-            onClick={() => setSelectedAccountId(acc.sessionId)}
-            style={{
-              width: 52, height: 52, borderRadius: 16, background: selectedAccountId === acc.sessionId ? '#1e293b' : 'transparent',
-              border: selectedAccountId === acc.sessionId ? '2px solid #38bdf8' : '2px solid transparent',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', position: 'relative', transition: 'all 0.2s'
-            }}
-            title={acc.sessionId}
-          >
-            <div style={{ fontSize: 20 }}>🤖</div>
-            <div style={{ position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: '50%', background: STATUS_COLOR[acc.status] || '#94a3b8', border: '2px solid #0f172a' }} />
-          </button>
-        ))}
-        {/*
-        <button style={{ width: 52, height: 52, borderRadius: 16, border: '2px dashed #334155', background: 'transparent', color: '#334155', fontSize: 24, cursor: 'pointer', transition: 'all 0.2s' }}>+</button>
-        */}
-      </div>
+      // Clear unread count locally
+      setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { ...c, unreadCount: 0 } : c));
+    }
+  }, [selectedContact]);
 
-      <nav style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <button 
-          onClick={() => setView('chats')}
-          style={{ width: 52, height: 52, borderRadius: 16, border: 'none', background: view === 'chats' ? '#1e293b' : 'transparent', color: view === 'chats' ? '#38bdf8' : '#64748b', cursor: 'pointer', fontSize: 24 }}
-          title="Chats"
-        >💬</button>
-        <button 
-          onClick={() => setView('settings')}
-          style={{ width: 52, height: 52, borderRadius: 16, border: 'none', background: view === 'settings' ? '#1e293b' : 'transparent', color: view === 'settings' ? '#38bdf8' : '#64748b', cursor: 'pointer', fontSize: 24 }}
-          title="Settings"
-        >⚙️</button>
-      </nav>
-    </div>
-  );
+  const connectWhatsApp = async () => {
+    if (!selectedAccountId) return;
+    await fetch(`${API}/api/refresh-qr`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: selectedAccountId }) });
+    alert('QR refresh request sent. A fresh QR code will appear shortly.');
+  };
 
-  const renderChatsView = () => (
-    <div style={{ flex: 1, display: 'flex', background: '#020617', overflow: 'hidden' }}>
-      <div style={{ width: 340, borderRight: '1px solid #1e293b', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '32px 24px', borderBottom: '1px solid #1e293b' }}>
-          <h2 style={{ fontSize: 22, fontWeight: 800, color: '#f1f5f9' }}>Messages</h2>
-          <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, textTransform: 'uppercase', letterSpacing: 1 }}>Account: {selectedAccountId}</div>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {contacts.map(c => {
-            const lastMsg = messages.filter(m => m.from === c).slice(-1)[0];
-            return (
-              <button
-                key={c}
-                onClick={() => setSelectedContact(c)}
-                style={{
-                  width: '100%', padding: '20px 24px', display: 'flex', gap: 16, alignItems: 'center',
-                  background: selectedContact === c ? '#1e293b' : 'transparent', border: 'none',
-                  borderBottom: '1px solid #1e293b', cursor: 'pointer', textAlign: 'left'
-                }}
-              >
-                <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>👤</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, color: selectedContact === c ? '#f1f5f9' : '#94a3b8', fontSize: 15 }}>{c.split('@')[0]}</div>
-                  <div style={{ fontSize: 13, color: '#64748b', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {lastMsg ? lastMsg.body : 'No history yet'}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+  // New: Sync messages manually
+  const syncMessages = async () => {
+    if (!selectedAccountId) return;
+    await fetch(`${API}/api/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: selectedAccountId }) });
+    // After syncing, re-fetch messages and contacts
+    fetchStatus(selectedAccountId);
+    alert('Sync completed. Messages refreshed.');
+  };
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {selectedContact ? (
-          <>
-            <header style={{ height: 80, borderBottom: '1px solid #1e293b', padding: '0 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(2, 6, 23, 0.8)', backdropFilter: 'blur(10px)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ width: 44, height: 44, borderRadius: '50%', background: '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>👤</div>
-                <div>
-                  <div style={{ fontWeight: 700, color: '#f1f5f9' }}>{selectedContact}</div>
-                  <div style={{ fontSize: 11, color: '#22c55e' }}>{status.bot === 'ready' ? 'Online' : 'Initializing'}</div>
-                </div>
-              </div>
-              <button onClick={() => openPromptEditor(selectedContact)} style={{ background: '#1e293b', border: '1px solid #334155', color: '#38bdf8', borderRadius: 10, padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>✨ Customize Behavior</button>
-            </header>
-
-            <div style={{ flex: 1, overflowY: 'auto', padding: '40px 60px', display: 'flex', flexDirection: 'column', gap: 28 }}>
-              {messages.filter(m => m.from === selectedContact).map((m, i) => (
-                <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <div style={{ alignSelf: 'flex-start', maxWidth: '70%', background: '#1e293b', padding: '14px 20px', borderRadius: '4px 20px 20px 20px', color: '#e2e8f0', fontSize: 15, border: '1px solid #334155', lineHeight: 1.6 }}>{m.body}</div>
-                  <div style={{ alignSelf: 'flex-end', maxWidth: '70%', background: '#0c4a6e', padding: '14px 20px', borderRadius: '20px 4px 20px 20px', color: '#bae6fd', fontSize: 15, border: '1px solid #075985', lineHeight: 1.6 }}>{m.reply}</div>
-                  <div style={{ alignSelf: 'flex-end', fontSize: 10, color: '#475569', marginTop: -4, marginRight: 4 }}>{m.model} · {fmt(m.ts)}</div>
-                </div>
-              ))}
-              <div ref={bottomRef} />
-            </div>
-          </>
-        ) : (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, color: '#334155' }}>
-            <div style={{ fontSize: 100 }}>📂</div>
-            <h3 style={{ fontSize: 24, fontWeight: 800, color: '#94a3b8' }}>Select a conversation</h3>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
-  const renderSettingsView = () => (
-    <div style={{ flex: 1, background: '#020617', padding: 60, overflowY: 'auto' }}>
-      <div style={{ maxWidth: 800 }}>
-        <h2 style={{ fontSize: 36, fontWeight: 900, color: '#f1f5f9', marginBottom: 48 }}>Account Settings</h2>
-        
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 48 }}>
-          <section>
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: '#f1f5f9', marginBottom: 24 }}>AI Configuration</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-              {['ollama', 'openai'].map(p => (
-                <button
-                  key={p}
-                  onClick={() => switchProvider(p as 'ollama' | 'openai')}
-                  style={{
-                    padding: 32, borderRadius: 24, background: status.provider === p ? 'linear-gradient(135deg, #1e293b, #0f172a)' : 'transparent',
-                    border: status.provider === p ? '2px solid #38bdf8' : '1px solid #1e293b', cursor: 'pointer', textAlign: 'left'
-                  }}
-                >
-                  <div style={{ fontSize: 36, marginBottom: 16 }}>{p === 'ollama' ? '🏠' : '☁️'}</div>
-                  <div style={{ fontSize: 20, fontWeight: 800, color: status.provider === p ? '#f1f5f9' : '#64748b' }}>{p === 'ollama' ? 'Local Ollama' : 'Cloud OpenAI'}</div>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section>
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: '#f1f5f9', marginBottom: 24 }}>System Status ({selectedAccountId})</h3>
-            <div style={{ background: '#0f172a', borderRadius: 24, padding: 32, border: '1px solid #1e293b', display: 'flex', flexDirection: 'column', gap: 20 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#64748b' }}>Status</span>
-                <span style={{ color: STATUS_COLOR[status.bot], fontWeight: 800 }}>{status.bot.toUpperCase()}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#64748b' }}>Active Model</span>
-                <span style={{ color: '#f1f5f9', fontWeight: 600 }}>{status.model}</span>
-              </div>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
-  );
+  const formatStatusLabel = (value: string) => value.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+  const formatLastActive = (value?: string | null) => value ? new Date(value).toLocaleString() : 'Waiting for activity';
+  const selectedAccount = accounts.find((account) => account.sessionId === selectedAccountId) || null;
+  const currentQrCode = selectedAccountId
+    ? qrCodes[selectedAccountId] || (status.sessionId === selectedAccountId ? status.qr || null : null) || selectedAccount?.qrCode || null
+    : null;
+  const isConnected = status.bot === 'ready' && Boolean(status.phoneNumber && status.phoneNumber !== 'Not Linked');
+  const connectButtonLabel = isConnected ? 'Reconnect / New QR' : 'Connect WhatsApp';
+  const connectionSummary = isConnected
+    ? 'This account is linked and ready to send replies.'
+    : currentQrCode
+      ? 'Scan the QR code below from WhatsApp on your phone to finish linking this account.'
+      : 'Generate a QR code to connect this WhatsApp account from the settings page.';
+  const getContactDisplay = (c: Contact) => c.name || c.pushname || c.contactId.split('@')[0];
 
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#020617', color: '#f8fafc', fontFamily: 'Outfit, sans-serif' }}>
-      <AppSidebar />
-      <main style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {view === 'chats' && renderChatsView()}
-        {view === 'settings' && renderSettingsView()}
-      </main>
-
-      {editingPrompt && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(2, 6, 23, 0.95)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#0f172a', borderRadius: 32, padding: 48, width: '95%', maxWidth: 600, border: '1px solid #1e293b', boxShadow: '0 40px 100px -20px rgba(0,0,0,0.8)' }}>
-            <h3 style={{ fontSize: 28, fontWeight: 900, color: '#f1f5f9', marginBottom: 12 }}>Persona Studio</h3>
-            <p style={{ fontSize: 15, color: '#64748b', marginBottom: 40 }}>Craft the perfect behavior for <span style={{ color: '#38bdf8' }}>{editingPrompt.id}</span>.</p>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', marginBottom: 12, display: 'block' }}>User Profile / Context</label>
-                <input value={editingPrompt.context} onChange={e => setEditingPrompt({ ...editingPrompt, context: e.target.value })} placeholder="e.g. John, CEO of Acme Inc." style={{ width: '100%', background: '#020617', border: '1px solid #1e293b', borderRadius: 14, padding: 18, color: 'white' }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', marginBottom: 12, display: 'block' }}>Behavioral Instructions</label>
-                <textarea value={editingPrompt.prompt} onChange={e => setEditingPrompt({ ...editingPrompt, prompt: e.target.value })} placeholder="How should the AI behave?" style={{ width: '100%', height: 160, background: '#020617', border: '1px solid #1e293b', borderRadius: 20, padding: 24, color: 'white', resize: 'none' }} />
-              </div>
-            </div>
-            
-            <div style={{ display: 'flex', gap: 20, justifyContent: 'flex-end', marginTop: 48 }}>
-              <button onClick={() => setEditingPrompt(null)} style={{ background: 'transparent', border: 'none', color: '#64748b', fontWeight: 700, cursor: 'pointer' }}>Discard</button>
-              <button onClick={saveContactPrompt} style={{ background: '#38bdf8', border: 'none', borderRadius: 16, color: '#0f172a', fontWeight: 900, padding: '16px 40px', cursor: 'pointer' }}>Apply Signature</button>
-            </div>
-          </div>
+    <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
+      {/* Side Rail */}
+      <nav className="side-rail">
+        <div className="logo">AI</div>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {accounts.map(acc => (
+            <button 
+              key={acc.sessionId} 
+              onClick={() => setSelectedAccountId(acc.sessionId)} 
+              style={{ position: 'relative', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            >
+              <div style={{ 
+                width: 52, height: 52, borderRadius: 16, border: selectedAccountId === acc.sessionId ? '2px solid #38bdf8' : 'none',
+                background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24
+              }}>🤖</div>
+              <div style={{ 
+                position: 'absolute', bottom: 0, right: 0, width: 14, height: 14, borderRadius: '50%', 
+                background: STATUS_COLOR[acc.status] || '#94a3b8', border: '2px solid #0f172a' 
+              }} />
+            </button>
+          ))}
         </div>
-      )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <button className={`nav-item ${view === 'chats' ? 'active' : ''}`} onClick={() => setView('chats')}>💬</button>
+          <button className={`nav-item ${view === 'analytics' ? 'active' : ''}`} onClick={() => setView('analytics')}>📊</button>
+          <button className={`nav-item ${view === 'database' ? 'active' : ''}`} onClick={() => setView('database')}>🗄️</button>
+          <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>⚙️</button>
+        </div>
+      </nav>
+
+      <main style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        {view === 'chats' && (
+          <>
+            {/* Column 1: Contacts */}
+            <div className="contact-list">
+              <div className="list-header">
+                <h2 style={{ fontSize: 22, fontWeight: 800 }}>Messages</h2>
+              </div>
+              <div style={{ overflowY: 'auto', flex: 1 }}>
+                {contacts.map(c => (
+                  <button 
+                    key={c.contactId} 
+                    className={`contact-item ${selectedContact?.contactId === c.contactId ? 'active' : ''}`}
+                    onClick={() => setSelectedContact(c)}
+                  >
+                    <div className="avatar">👤</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        {getContactDisplay(c)}
+                        {c.unreadCount ? <span className="unread-badge">{c.unreadCount}</span> : null}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{c.contactId.split('@')[0]}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Column 2: Chat */}
+            <div className="chat-container">
+              <header className="chat-header">
+                <div>
+                  <h3 style={{ fontSize: 18, fontWeight: 700 }}>{selectedContact ? getContactDisplay(selectedContact) : 'Select a conversation'}</h3>
+                  {selectedContact && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedContact.contactId}</div>}
+                </div>
+              </header>
+              <div className="message-area">
+                {messages.filter(m => m.from === selectedContact?.contactId).map((m, i) => (
+                  <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div className="message-bubble message-user">{m.body}</div>
+                    <div className="message-bubble message-ai">{m.reply}</div>
+                  </div>
+                ))}
+                <div ref={bottomRef} />
+              </div>
+            </div>
+
+            {/* Column 3: Context Panel */}
+            <aside className="right-panel">
+              {selectedContact ? (
+                <>
+                  <section>
+                    <div className="panel-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      Conversation Summary
+                      <button 
+                        onClick={() => fetchSummary(selectedContact.contactId)} 
+                        className="btn-primary" 
+                        style={{ padding: '4px 8px', fontSize: 10, borderRadius: 6, margin: 0 }}
+                      >
+                        🔄 Refresh
+                      </button>
+                    </div>
+                    <div className="card" style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-muted)' }}>
+                      {summary}
+                    </div>
+                  </section>
+
+                  <section>
+                    <div className="panel-title">Contact Details</div>
+                    <div className="card">
+                      <div style={{ marginBottom: 16 }}>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>NAME (OPTIONAL)</label>
+                        <input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Friendly name..." />
+                      </div>
+                      <div style={{ marginBottom: 16 }}>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>USER CONTEXT</label>
+                        <textarea 
+                          rows={3} value={editContext} onChange={e => setEditContext(e.target.value)} 
+                          placeholder="e.g. This is the CEO of Acme Inc..." 
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>CUSTOM AI INSTRUCTIONS</label>
+                        <textarea 
+                          rows={4} value={editPrompt} onChange={e => setEditPrompt(e.target.value)} 
+                          placeholder="e.g. Always be very formal with this person..." 
+                        />
+                      </div>
+                      <button className="btn-primary" style={{ width: '100%', marginTop: 20 }} onClick={saveContactDetails}>Save Changes</button>
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  Select a contact to view and edit details
+                </div>
+              )}
+            </aside>
+          </>
+        )}
+
+        {view === 'analytics' && (
+          <div style={{ padding: 60, overflowY: 'auto', width: '100%' }}>
+            <h2 style={{ fontSize: 32, fontWeight: 900, marginBottom: 40 }}>Data Analysis</h2>
+            {analytics && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 32 }}>
+                <div className="card">
+                  <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 8 }}>TOTAL MESSAGES</div>
+                  <div style={{ fontSize: 48, fontWeight: 900, color: 'var(--primary)' }}>{analytics.totalMessages}</div>
+                </div>
+                <div className="card">
+                  <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16 }}>MODEL DISTRIBUTION</div>
+                  {analytics.modelStats.map(s => (
+                    <div key={s._id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span style={{ fontSize: 14 }}>{s._id || 'Unknown'}</span>
+                      <span style={{ fontWeight: 800 }}>{s.count}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="card" style={{ gridColumn: 'span 2' }}>
+                  <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16 }}>DAILY ACTIVITY (LAST 7 DAYS)</div>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 160 }}>
+                    {analytics.dailyStats.map(d => (
+                      <div key={d._id} style={{ flex: 1, textAlign: 'center' }}>
+                        <div style={{ background: 'var(--primary)', height: `${(d.count / (Math.max(...analytics.dailyStats.map(x => x.count)) || 1)) * 100}%`, borderRadius: '4px 4px 0 0' }} />
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>{d._id.slice(-5)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {view === 'database' && (
+          <div style={{ padding: 60, overflowY: 'auto', width: '100%' }}>
+            <h2 style={{ fontSize: 32, fontWeight: 900, marginBottom: 40 }}>System & Data Model</h2>
+            {systemStatus && (
+              <div className="card" style={{ marginBottom: 40, display: 'flex', gap: 60 }}>
+                <div><label style={{ fontSize: 12, color: 'var(--text-muted)' }}>MONGODB</label><div style={{ color: systemStatus.mongodb === 'connected' ? 'var(--green)' : 'var(--red)', fontWeight: 800 }}>{systemStatus.mongodb.toUpperCase()}</div></div>
+                <div><label style={{ fontSize: 12, color: 'var(--text-muted)' }}>SERVER</label><div style={{ color: 'var(--green)', fontWeight: 800 }}>ONLINE</div></div>
+                <button onClick={() => fetchSchemaAndSystem()} className="btn-primary" style={{ padding: '8px 16px' }}>🔄 Force Sync</button>
+              </div>
+            )}
+            {schema && Object.entries(schema).map(([name, fields]: [string, any]) => (
+              <div key={name} className="card" style={{ marginBottom: 24 }}>
+                <h3 style={{ fontSize: 18, color: 'var(--primary)', marginBottom: 16 }}>Collection: {name}</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+                  {Object.entries(fields).map(([f, d]: [string, any]) => (
+                    <div key={f} style={{ padding: 12, background: 'var(--bg-dark)', borderRadius: 12, border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>{f}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{d}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {view === 'settings' && (
+          <div style={{ padding: 60, overflowY: 'auto', width: '100%' }}>
+            <h2 style={{ fontSize: 32, fontWeight: 900, marginBottom: 40 }}>Settings</h2>
+
+            {!selectedAccountId ? (
+              <div className="card" style={{ maxWidth: 560 }}>
+                <h3 style={{ fontSize: 18, marginBottom: 12 }}>Waiting for WhatsApp session</h3>
+                <p style={{ color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 20 }}>
+                  The dashboard has not received an account yet. As soon as the bot reports its first connection state, this page will show the full WhatsApp connect flow and QR code details.
+                </p>
+                <button onClick={fetchAccounts} className="btn-primary">🔄 Retry Loading Connection</button>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 32 }}>
+                {/* AI Service Configuration */}
+                <div className="card">
+                  <h3 style={{ fontSize: 18, marginBottom: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span>🧠</span> AI Service Provider
+                  </h3>
+                  
+                  <div style={{ marginBottom: 24 }}>
+                    <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 12 }}>ACTIVE PROVIDER</label>
+                    <div style={{ display: 'flex', gap: 12 }}>
+                      {['ollama', 'openai'].map(p => (
+                        <button 
+                          key={p} 
+                          className={`btn-primary ${status.provider === p ? '' : 'btn-outline'}`}
+                          style={{ flex: 1, padding: '12px', background: status.provider === p ? 'var(--primary)' : 'transparent' }}
+                          onClick={() => fetch(`${API}/api/provider`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ accountId: selectedAccountId, provider: p })
+                          }).then(() => fetchStatus(selectedAccountId))}
+                        >
+                          {p.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: 24 }}>
+                    <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>MODEL SELECTION</label>
+                    <select 
+                      value={status.model}
+                      style={{ width: '100%', padding: '12px', borderRadius: 12, background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                      onChange={(e) => fetch(`${API}/api/model`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ accountId: selectedAccountId, model: e.target.value })
+                      }).then(() => fetchStatus(selectedAccountId))}
+                    >
+                      {status.availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+
+                  {status.provider === 'openai' && (
+                    <div>
+                      <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>OPENAI API KEY</label>
+                      <input 
+                        type="password"
+                        placeholder="sk-..."
+                        style={{ width: '100%' }}
+                        onBlur={(e) => fetch(`${API}/api/config`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ accountId: selectedAccountId, apiKey: e.target.value })
+                        })}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* WhatsApp Account Management */}
+                <div className="card">
+                  <h3 style={{ fontSize: 18, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span>📱</span> WhatsApp Connection
+                  </h3>
+                  <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                    {connectionSummary}
+                  </p>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px', background: 'var(--bg-dark)', borderRadius: 12 }}>
+                      <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Status</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: STATUS_COLOR[status.bot] || '#94a3b8' }}>{formatStatusLabel(status.bot)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px', background: 'var(--bg-dark)', borderRadius: 12 }}>
+                      <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Phone</span>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>{status.phoneNumber || 'Not Linked'}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px', background: 'var(--bg-dark)', borderRadius: 12 }}>
+                      <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Session ID</span>
+                      <span style={{ fontSize: 11, fontFamily: 'monospace' }}>{selectedAccountId}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px', background: 'var(--bg-dark)', borderRadius: 12 }}>
+                      <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Last Activity</span>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>{formatLastActive(status.lastActive || selectedAccount?.lastActive)}</span>
+                    </div>
+                  </div>
+
+                  {currentQrCode ? (
+                    <div style={{ textAlign: 'center', background: 'var(--bg-dark)', padding: 24, borderRadius: 20, marginTop: 20 }}>
+                      <QRCodeCanvas value={currentQrCode} size={180} />
+                      <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>Open WhatsApp → Linked Devices → Link a Device → Scan QR</p>
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', background: 'var(--bg-dark)', padding: 24, borderRadius: 20, marginTop: 20, color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.7 }}>
+                      No active QR code yet. Click <strong>{connectButtonLabel}</strong> to generate one and pair this account.
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
+                    <button onClick={connectWhatsApp} className="btn-primary" style={{ flex: 1 }}>{isConnected ? '🔄 Reconnect / New QR' : '🔗 Connect WhatsApp'}</button>
+                    <button 
+                      className="btn-primary" 
+                      style={{ flex: 1, background: '#ef4444' }}
+                      onClick={async () => {
+                        if (!confirm('Logout and unlink this WhatsApp account?')) return;
+                        await fetch(`${API}/api/logout`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ accountId: selectedAccountId })
+                        });
+                        fetchStatus(selectedAccountId);
+                      }}
+                    >🚪 Logout</button>
+                  </div>
+                </div>
+
+                {/* Platform Appearance */}
+                <div className="card">
+                  <h3 style={{ fontSize: 18, marginBottom: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span>🎨</span> Appearance
+                  </h3>
+                  
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>Theme Mode</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Switch between light and dark interface</div>
+                    </div>
+                    <div style={{ display: 'flex', background: 'var(--bg-dark)', padding: 4, borderRadius: 12 }}>
+                      <button 
+                        onClick={() => setTheme('dark')}
+                        style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: theme === 'dark' ? 'var(--bg-card)' : 'transparent', color: theme === 'dark' ? 'var(--primary)' : 'var(--text-muted)', cursor: 'pointer' }}
+                      >🌙 Dark</button>
+                      <button 
+                        onClick={() => setTheme('light')}
+                        style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: theme === 'light' ? 'var(--bg-card)' : 'transparent', color: theme === 'light' ? 'var(--primary)' : 'var(--text-muted)', cursor: 'pointer' }}
+                      >☀️ Light</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
     </div>
   );
 }

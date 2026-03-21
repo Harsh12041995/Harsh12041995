@@ -23,8 +23,22 @@ export class OllamaService implements AIService {
    * Generate a reply for a given contact, maintaining conversation history
    * so the model has context from previous messages in the chat.
    */
-  async generateReply(contactId: string, userMessage: string, customPrompt?: string): Promise<string> {
-    const history = this.getHistory(contactId);
+  async generateReply(accountId: string, contactId: string, userMessage: string, customPrompt?: string): Promise<string> {
+    const historyKey = `${accountId}:${contactId}`;
+    const history = this.getHistory(historyKey);
+
+    // If history is empty, try to populate it from the database
+    if (history.length === 0) {
+      const { Chat } = await import('../models/Chat');
+      const savedMessages = await Chat.find({ accountId, from: contactId }).sort({ ts: -1 }).limit(this.MAX_HISTORY);
+      
+      // Convert saved messages to ChatMessage format and add to history
+      // Note: we reverse to get them in chronological order
+      for (const msg of savedMessages.reverse()) {
+        history.push({ role: 'user', content: msg.body });
+        history.push({ role: 'assistant', content: msg.reply });
+      }
+    }
 
     // Add the new user message to history
     history.push({ role: 'user', content: userMessage });
@@ -42,11 +56,9 @@ export class OllamaService implements AIService {
 
       const reply = response.message.content.trim();
 
-      // Add assistant reply to history
+      // Add assistant reply to history and trim to prevent unbounded growth
       history.push({ role: 'assistant', content: reply });
-
-      // Trim history to avoid unbounded growth
-      this.trimHistory(contactId);
+      this.trimHistory(historyKey); // ✅ Fix: was contactId (wrong), now historyKey (correct)
 
       return reply;
     } catch (error: unknown) {
@@ -102,11 +114,11 @@ export class OllamaService implements AIService {
     return this.histories.get(contactId)!;
   }
 
-  private trimHistory(contactId: string): void {
-    const history = this.histories.get(contactId);
+  /** Trim history to MAX_HISTORY pairs to keep RAM usage bounded. */
+  private trimHistory(historyKey: string): void {
+    const history = this.histories.get(historyKey);
     if (history && history.length > this.MAX_HISTORY * 2) {
-      // Keep the most recent MAX_HISTORY pairs
-      this.histories.set(contactId, history.slice(-this.MAX_HISTORY * 2));
+      this.histories.set(historyKey, history.slice(-this.MAX_HISTORY * 2));
     }
   }
 }

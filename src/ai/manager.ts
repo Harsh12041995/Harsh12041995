@@ -1,6 +1,7 @@
 import { AIService, ProviderType } from './types';
 import { OllamaService } from './ollama';
 import { OpenAIService } from './openai';
+import { decrypt } from '../crypto';
 
 export class ProviderManager implements AIService {
   private ollama: OllamaService;
@@ -14,8 +15,22 @@ export class ProviderManager implements AIService {
 
   // ── AIService Implementation ──────────────────────────────────────────────
 
-  async generateReply(contactId: string, userMessage: string, customPrompt?: string): Promise<string> {
-    return this.activeService().generateReply(contactId, userMessage, customPrompt);
+  async generateReply(accountId: string, contactId: string, userMessage: string, customPrompt?: string): Promise<string> {
+    const { Account } = await import('../models/Account');
+    const acc = await Account.findOne({ sessionId: accountId });
+
+    // ✅ Fix (Task 2.2): Use a local provider variable, NOT this.currentProvider,
+    // to avoid race conditions when two sessions process messages simultaneously.
+    const provider: ProviderType = (acc?.provider as ProviderType) || 'ollama';
+    const service = provider === 'ollama' ? this.ollama : this.openai;
+
+    if (acc?.model) service.setModel(acc.model);
+    if (provider === 'openai' && acc?.apiKey) {
+      // Decrypt the API key before passing it to the service
+      this.openai.setApiKey(decrypt(acc.apiKey));
+    }
+
+    return service.generateReply(accountId, contactId, userMessage, customPrompt);
   }
 
   async listModels(): Promise<string[]> {

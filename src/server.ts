@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server as SocketIO } from 'socket.io';
 import cors from 'cors';
+import mongoose from 'mongoose';
 import { ProviderManager } from './ai/manager';
 import { ProviderType } from './ai/types';
 import { Chat } from './models/Chat';
@@ -16,12 +17,13 @@ app.use(cors());
 app.use(express.json());
 
 let aiService: ProviderManager | null = null;
+let refreshQrHandler: ((sessionId: string) => Promise<void>) | null = null;
+let logoutHandler: ((sessionId: string) => Promise<void>) | null = null;
 
-// ── Multi-Account State ─────────────────────────────────────────────────────
+export function registerLogoutHandler(handler: (sessionId: string) => Promise<void>): void {
+  logoutHandler = handler;
+}
 
-// This will help us track which account is currently being "viewed" in the dashboard
-// In a real multi-user system, this would be session-based.
-let activeDashboardAccount: string | null = null;
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 
@@ -33,44 +35,188 @@ app.get('/api/messages', async (req, res) => {
 });
 
 app.get('/api/contacts', async (req, res) => {
-  const { accountId } = req.query;
+  const accountId = req.query.accountId as string;
   if (!accountId) return res.json([]);
-  const uniqueContacts = await Chat.distinct('from', { accountId });
-  return res.json(uniqueContacts);
+  
+  // Get all contacts from the Contact model for this account
+  const contacts = await Contact.find({ accountId });
+  
+  // Also check Chat history for any contacts not yet in the Contact model
+  const chatContactIds = await Chat.distinct('from', { accountId });
+  const existingContactIds = new Set(contacts.map(c => c.contactId));
+  
+  const missingContactIds = chatContactIds.filter(id => !existingContactIds.has(id));
+  
+  // Create basic Contact entries for missing IDs (will be enriched later)
+  for (const id of missingContactIds) {
+    const newContact = await Contact.create({ accountId, contactId: id });
+    (contacts as any).push(newContact);
+  }
+
+  return res.json(contacts);
 });
 
 app.get('/api/accounts', async (_req, res) => {
-  const accounts = await Account.find();
+  const accounts = await Account.find().sort({ lastActive: -1 });
   res.json(accounts);
 });
 
 app.get('/api/status', async (req, res) => {
   const { accountId } = req.query;
-  const acc = await Account.findOne({ sessionId: accountId });
+  const acc = await Account.findOne({ sessionId: accountId as string });
   const models = aiService ? await aiService.listModels() : [];
   
   res.json({
+    sessionId: acc?.sessionId || accountId || null,
     bot: acc?.status || 'disconnected',
-    qr: null, // QR is now emitted via socket per account
-    model: aiService?.getModel() ?? 'unknown',
+    qr: acc?.qrCode || null,
+    model: acc?.model || aiService?.getModel() || 'unknown',
     availableModels: models,
-    provider: aiService?.getProvider() ?? 'ollama',
+    provider: acc?.provider || 'ollama',
+    phoneNumber: acc?.phoneNumber || 'Not Linked',
+    lastActive: acc?.lastActive || null
   });
 });
 
-app.post('/api/provider', (req, res) => {
-  const { provider } = req.body as { provider?: ProviderType };
-  if (!provider) return res.status(400).json({ error: 'provider is required' });
-  aiService?.setProvider(provider);
-  io.emit('provider_changed', { provider });
+app.get('/api/system-status', async (_req, res) => {
+  const mongoStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+  const accounts = await Account.find();
+  res.json({
+    mongodb: mongoStatus,
+    server: 'online',
+    accounts: accounts.map(a => ({ sessionId: a.sessionId, status: a.status, phone: a.phoneNumber }))
+  });
+});
+
+app.get('/api/analytics', async (req, res) => {
+  const { accountId } = req.query;
+  const filter = accountId ? { accountId } : {};
+  
+  const totalMessages = await Chat.countDocuments(filter);
+  const modelStats = await Chat.aggregate([
+    { $match: filter },
+    { $group: { _id: "$model", count: { $sum: 1 } } }
+  ]);
+  
+  const dailyStats = await Chat.aggregate([
+    { $match: filter },
+    {
+      $group: {
+        _id: { $dateToString: { format: "%Y-%m-%d", date: "$ts" } },
+        count: { $sum: 1 }
+      }
+    },
+    { $sort: { _id: 1 } },
+    { $limit: 7 }
+  ]);
+
+  res.json({ totalMessages, modelStats, dailyStats });
+});
+
+app.get('/api/schema', (_req, res) => {
+  res.json({
+    Account: {
+      sessionId: "String (Unique ID)",
+      phoneNumber: "String (Linked Number)",
+      status: "String (ready, qr, starting)",
+      qrCode: "String (Latest QR payload)",
+      provider: "String (ollama, openai)",
+      model: "String (Target AI model)",
+      lastActive: "Date"
+    },
+    Chat: {
+      accountId: "String (Ref Account)",
+      from: "String (Phone No)",
+      body: "String (Incoming)",
+      reply: "String (AI response)",
+      model: "String (AI model used)",
+      ts: "Date (Timestamp)"
+    },
+    Contact: {
+      accountId: "String (Ref Account)",
+      contactId: "String (Phone No)",
+      prompt: "String (Custom instructions)",
+      context: "String (User profile context)"
+    }
+  });
+});
+
+app.post('/api/refresh-qr', async (req, res) => {
+  const { accountId } = req.body;
+  if (!accountId || !refreshQrHandler) return res.status(400).json({ error: 'Session ID and handler required' });
+  
+  try {
+    await refreshQrHandler(accountId);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to refresh QR' });
+  }
+});
+
+app.post('/api/logout', async (req, res) => {
+  const { accountId } = req.body;
+  if (!accountId) return res.status(400).json({ error: 'accountId required' });
+
+  try {
+    if (logoutHandler) await logoutHandler(accountId);
+    await Account.findOneAndUpdate(
+      { sessionId: accountId },
+      { status: 'disconnected', phoneNumber: null, qrCode: null, lastActive: new Date() }
+    );
+    io.emit('account_status', { sessionId: accountId, status: 'disconnected', qr: null });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+app.get('/api/summarize/:id', async (req, res) => {
+  const { id } = req.params;
+  const { accountId } = req.query;
+  if (!accountId || !aiService) return res.status(400).json({ error: 'accountId and AI service required' });
+
+  try {
+    const history = await Chat.find({ accountId, from: id }).sort({ ts: -1 }).limit(20);
+    if (history.length === 0) return res.json({ summary: 'No conversation history yet.' });
+
+    const conversationText = history.reverse().map(m => `User: ${m.body}\nAI: ${m.reply}`).join('\n');
+    const summary = await aiService.generateReply(
+      accountId as string,
+      'system',
+      `Summarize the following conversation in 2-3 short bullet points. Focus on the user's personality, needs, and current mood:\n\n${conversationText}`,
+      "You are a helpful assistant that summarizes conversations concisely."
+    );
+
+    res.json({ summary });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to generate summary' });
+  }
+});
+
+app.post('/api/provider', async (req, res) => {
+  const { provider, accountId } = req.body as { provider?: ProviderType; accountId?: string };
+  if (!provider || !accountId) return res.status(400).json({ error: 'provider and accountId are required' });
+  
+  await Account.findOneAndUpdate({ sessionId: accountId }, { provider });
+  io.emit('provider_changed', { provider, accountId });
   return res.json({ ok: true, provider });
 });
 
-app.post('/api/config', (req, res) => {
-  const { apiKey } = req.body as { apiKey?: string };
-  if (!apiKey) return res.status(400).json({ error: 'apiKey is required' });
-  aiService?.setApiKey(apiKey);
+app.post('/api/config', async (req, res) => {
+  const { apiKey, accountId } = req.body as { apiKey?: string; accountId?: string };
+  if (!apiKey || !accountId) return res.status(400).json({ error: 'apiKey and accountId are required' });
+  
+  await Account.findOneAndUpdate({ sessionId: accountId }, { apiKey });
   return res.json({ ok: true });
+});
+
+app.post('/api/model', async (req, res) => {
+  const { model, accountId } = req.body as { model?: string; accountId?: string };
+  if (!model || !accountId) return res.status(400).json({ error: 'model and accountId are required' });
+  
+  await Account.findOneAndUpdate({ sessionId: accountId }, { model });
+  io.emit('model_changed', { model, accountId });
+  return res.json({ ok: true, model });
 });
 
 app.get('/api/contact-prompt/:id', async (req, res) => {
@@ -83,24 +229,16 @@ app.get('/api/contact-prompt/:id', async (req, res) => {
 });
 
 app.post('/api/contact-prompt', async (req, res) => {
-  const { id, prompt, context, accountId } = req.body as { id?: string; prompt?: string; context?: string; accountId?: string };
+  const { id, prompt, context, accountId, name } = req.body as { id?: string; prompt?: string; context?: string; accountId?: string; name?: string };
   if (!id || !accountId) return res.status(400).json({ error: 'id and accountId are required' });
   
   await Contact.findOneAndUpdate(
     { accountId, contactId: id },
-    { prompt: prompt || '', context: context || '' },
+    { prompt: prompt ?? '', context: context ?? '', name: name ?? '' },
     { upsert: true }
   );
   
   return res.json({ ok: true });
-});
-
-app.post('/api/model', (req, res) => {
-  const { model } = req.body as { model?: string };
-  if (!model) return res.status(400).json({ error: 'model is required' });
-  aiService?.setModel(model);
-  io.emit('model_changed', { model });
-  return res.json({ ok: true, model });
 });
 
 // ── Socket.io ──────────────────────────────────────────────────────────────
@@ -115,25 +253,55 @@ export function registerAiService(service: ProviderManager): void {
   aiService = service;
 }
 
+export function registerRefreshHandler(handler: (sessionId: string) => Promise<void>): void {
+  refreshQrHandler = handler;
+}
+
 export async function updateAccountStatus(sessionId: string, status: string, qr?: string): Promise<void> {
-  await Account.findOneAndUpdate({ sessionId }, { status, lastActive: new Date() }, { upsert: true });
-  io.emit('account_status', { sessionId, status, qr });
+  const update: Record<string, unknown> = {
+    status,
+    lastActive: new Date(),
+    qrCode: status === 'qr' && qr ? qr : null
+  };
+
+  await Account.findOneAndUpdate({ sessionId }, update, { upsert: true });
+  io.emit('account_status', { sessionId, status, qr: update.qrCode });
+}
+
+export async function updateAccountPhone(sessionId: string, phoneNumber: string): Promise<void> {
+  await Account.findOneAndUpdate(
+    { sessionId },
+    { phoneNumber, lastActive: new Date() },
+    { upsert: true }
+  );
 }
 
 export async function broadcastMessage(accountId: string, entry: { from: string; body: string; reply: string; model: string }): Promise<void> {
   const full = new Chat({ ...entry, accountId, ts: new Date() });
   await full.save();
-  io.emit('new_message', full);
+  
+  // ✅ Task 4.3 — Update lastMessageAt on contact for sorting by recency
+  const contact = await Contact.findOneAndUpdate(
+    { accountId, contactId: entry.from },
+    { $set: { lastMessageAt: new Date() } },
+    { new: true }
+  );
+  
+  io.emit('new_message', { ...full.toObject(), contact });
 }
 
+// ✅ Task 4.4 — Use contact-level prompt first, then account defaultPrompt as fallback
 export async function getContactPrompt(accountId: string, contactId: string): Promise<string | undefined> {
   const data = await Contact.findOne({ accountId, contactId });
-  if (!data) return undefined;
   
   let combined = '';
-  if (data.context) combined += `User Context: ${data.context}\n`;
-  if (data.prompt) combined += `Custom Instructions: ${data.prompt}`;
-  return combined || undefined;
+  if (data?.context) combined += `User Context: ${data.context}\n`;
+  if (data?.prompt) combined += `Custom Instructions: ${data.prompt}`;
+  if (combined) return combined;
+
+  // Fallback to account-level default prompt
+  const account = await Account.findOne({ sessionId: accountId });
+  return account?.defaultPrompt || undefined;
 }
 
 export function startServer(port = 3001): void {
