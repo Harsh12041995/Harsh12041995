@@ -972,7 +972,7 @@ npm run bot
 **Terminal 2 — Start the Dashboard:**
 ```bash
 npm run dashboard
-# Open: http://localhost:5173
+# Open: httpcalhost:5173
 ```
 
 ### Connecting WhatsApp

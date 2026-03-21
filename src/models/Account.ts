@@ -8,6 +8,7 @@ const AccountSchema = new mongoose.Schema({
   apiKey: { type: String, default: '' },
   model: { type: String, default: '' },
   defaultPrompt: { type: String, default: '' },
+  bio: { type: String, default: '' },
   qrCode: { type: String, default: null },
   lastActive: { type: Date, default: Date.now }
 });

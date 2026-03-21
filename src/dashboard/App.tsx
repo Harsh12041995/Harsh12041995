@@ -7,6 +7,7 @@ const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 interface LogEntry {
   _id: string; from: string; body: string; reply: string; model: string; ts: string; accountId: string;
+  needsApproval?: boolean; isApproved?: boolean; draftReply?: string;
 }
 
 interface Contact {
@@ -16,6 +17,8 @@ interface Contact {
   prompt?: string;
   context?: string;
   unreadCount?: number;
+  isAiEnabled?: boolean;
+  chatStyle?: string;
 }
 
 interface WhatsAppAccount {
@@ -37,6 +40,7 @@ interface BotStatus {
   provider: 'ollama' | 'openai';
   phoneNumber?: string;
   qr?: string | null;
+  bio?: string;
   lastActive?: string | null;
 }
 
@@ -81,6 +85,9 @@ export default function App() {
   const [editPrompt, setEditPrompt] = useState('');
   const [editContext, setEditContext] = useState('');
   const [editName, setEditName] = useState('');
+  const [editAiEnabled, setEditAiEnabled] = useState(true);
+  const [editChatStyle, setEditChatStyle] = useState('friendly');
+  const [editBio, setEditBio] = useState('');
 
   const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -117,6 +124,7 @@ export default function App() {
     setStatus(nextStatus);
     setContacts(nextContacts);
     setMessages(nextMessages);
+    setEditBio(nextStatus.bio || '');
     setQrCodes((prev) => {
       const next = { ...prev };
       if (nextStatus.qr) next[accountId] = nextStatus.qr;
@@ -205,9 +213,17 @@ export default function App() {
     sock.on('new_message', handleNewMessage);
     sock.on('account_status', handleAccountStatus);
 
+    sock.on('send_whatsapp_reply', ({ accountId, to, body, chatId }: any) => {
+      // Local optimistic update for approval
+      if (accountId === selectedAccountId) {
+        setMessages(prev => prev.map(m => m._id === chatId ? { ...m, reply: body, needsApproval: false, isApproved: true } : m));
+      }
+    });
+
     return () => {
       sock.off('new_message', handleNewMessage);
       sock.off('account_status', handleAccountStatus);
+      sock.off('send_whatsapp_reply');
     };
   }, [selectedAccountId, selectedContact]);
 
@@ -250,13 +266,49 @@ export default function App() {
         accountId: selectedAccountId,
         prompt: editPrompt,
         context: editContext,
-        name: editName
+        name: editName,
+        isAiEnabled: editAiEnabled,
+        chatStyle: editChatStyle
       })
     });
 
+    // Save bio at account level only if it changed
+    const currentBio = status.bio || '';
+    console.log('[Dashboard] Saving... editBio:', editBio, 'currentBio:', currentBio);
+    
+    if (selectedAccountId && editBio !== currentBio) {
+      try {
+        console.log('[Dashboard] Bio changed, calling /api/config...');
+        const res = await fetch(`${API}/api/config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountId: selectedAccountId, bio: editBio })
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          console.error('[Dashboard] /api/config failed:', errData);
+        } else {
+          // Update local status bio to prevent repeated calls
+          setStatus(prev => ({ ...prev, bio: editBio }));
+        }
+      } catch (err) {
+        console.error('Failed to update bio:', err);
+      }
+    }
+
     // Refresh contact in list
-    setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { ...c, name: editName, prompt: editPrompt, context: editContext } : c));
-    alert('Contact details saved!');
+    setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { 
+      ...c, name: editName, prompt: editPrompt, context: editContext, isAiEnabled: editAiEnabled, chatStyle: editChatStyle 
+    } : c));
+    alert('Details saved!');
+  };
+
+  const handleApprove = async (chatId: string, text: string) => {
+    await fetch(`${API}/api/chat/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId, text })
+    });
   };
 
   useEffect(() => {
@@ -264,6 +316,8 @@ export default function App() {
       setEditPrompt(selectedContact.prompt || '');
       setEditContext(selectedContact.context || '');
       setEditName(selectedContact.name || '');
+      setEditAiEnabled(selectedContact.isAiEnabled ?? true);
+      setEditChatStyle(selectedContact.chatStyle || 'friendly');
 
       // Clear unread count locally
       setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { ...c, unreadCount: 0 } : c));
@@ -284,6 +338,31 @@ export default function App() {
       alert('Failed to send QR refresh request. Please check if the bot server is running.');
     } finally {
       setIsRefreshing(false);
+    }
+  };
+
+  const handleAddAccount = async () => {
+    const sessionId = prompt('Enter a unique name for this WhatsApp session (e.g., "work", "personal"):');
+    if (!sessionId) return;
+    
+    try {
+      const res = await fetch(`${API}/api/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId })
+      });
+      
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Failed to add account: ${err.error}`);
+        return;
+      }
+      
+      await fetchAccounts();
+      setSelectedAccountId(sessionId);
+      alert(`Account "${sessionId}" added! You can now link it in Settings.`);
+    } catch (err) {
+      alert('Failed to connect to server.');
     }
   };
 
@@ -333,6 +412,16 @@ export default function App() {
               }} />
             </button>
           ))}
+          <button
+            onClick={handleAddAccount}
+            style={{ 
+              width: 52, height: 52, borderRadius: 16, background: 'transparent', 
+              border: '2px dashed var(--border)', cursor: 'pointer', 
+              display: 'flex', alignItems: 'center', justifyContent: 'center', 
+              fontSize: 24, color: 'var(--text-muted)' 
+            }}
+            title="Add Another WhatsApp Account"
+          >+</button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <button className={`nav-item ${view === 'chats' ? 'active' : ''}`} onClick={() => setView('chats')}>💬</button>
@@ -361,7 +450,10 @@ export default function App() {
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         {getContactDisplay(c)}
-                        {c.unreadCount ? <span className="unread-badge">{c.unreadCount}</span> : null}
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          {messages.some(m => m.from === c.contactId && m.needsApproval) && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b', boxShadow: '0 0 8px #f59e0b' }} />}
+                          {c.unreadCount ? <span className="unread-badge">{c.unreadCount}</span> : null}
+                        </div>
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{c.contactId.split('@')[0]}</div>
                     </div>
@@ -382,7 +474,41 @@ export default function App() {
                 {messages.filter(m => m.from === selectedContact?.contactId).map((m, i) => (
                   <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <div className="message-bubble message-user">{m.body}</div>
-                    <div className="message-bubble message-ai">{m.reply}</div>
+                    {m.needsApproval ? (
+                      <div className="approval-banner">
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span>🚨</span> NEEDS APPROVAL
+                        </div>
+                        <div className="draft-box">
+                          <textarea 
+                            defaultValue={m.draftReply} 
+                            id={`draft-${m._id}`}
+                            rows={2}
+                            style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--text-main)', fontSize: 13, resize: 'none', padding: 0 }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                          <button 
+                            className="btn-primary" 
+                            style={{ flex: 1, padding: '6px', fontSize: 12, background: '#22c55e' }}
+                            onClick={() => {
+                              const el = document.getElementById(`draft-${m._id}`) as HTMLTextAreaElement;
+                              handleApprove(m._id, el.value);
+                            }}
+                          >✅ Approve</button>
+                          <button 
+                            className="btn-primary btn-outline" 
+                            style={{ flex: 1, padding: '6px', fontSize: 12 }}
+                            onClick={() => {
+                              // Logic to reject or ignore could go here
+                              setMessages(prev => prev.map(msg => msg._id === m._id ? { ...msg, needsApproval: false } : msg));
+                            }}
+                          >🗑️ Dismiss</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="message-bubble message-ai">{m.reply || (m.isApproved ? 'Sent' : '...')}</div>
+                    )}
                   </div>
                 ))}
                 <div ref={bottomRef} />
@@ -430,7 +556,44 @@ export default function App() {
                           placeholder="e.g. Always be very formal with this person..."
                         />
                       </div>
+                      <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>AI Control</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Auto-reply to this chat</div>
+                        </div>
+                        <div 
+                          className={`toggle ${editAiEnabled ? 'active' : ''}`} 
+                          onClick={() => setEditAiEnabled(!editAiEnabled)}
+                        />
+                      </div>
+                      <div style={{ marginTop: 16 }}>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>CHAT STYLE</label>
+                        <select 
+                          value={editChatStyle} 
+                          onChange={e => setEditChatStyle(e.target.value)}
+                          style={{ width: '100%', padding: '8px', borderRadius: 10, background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                        >
+                          <option value="friendly">Friendly & Casual</option>
+                          <option value="formal">Professional & Formal</option>
+                          <option value="witty">Witty & Humorous</option>
+                          <option value="supportive">Supportive & Caring</option>
+                        </select>
+                      </div>
                       <button className="btn-primary" style={{ width: '100%', marginTop: 20 }} onClick={saveContactDetails}>Save Changes</button>
+                    </div>
+                  </section>
+
+                  <section>
+                    <div className="panel-title">Personal Persona (Global)</div>
+                    <div className="card">
+                      <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>YOUR BIO / PERSONALITY RULES</label>
+                      <textarea
+                        rows={4} value={editBio} onChange={e => setEditBio(e.target.value)}
+                        placeholder="e.g. My name is Harsh, I'm a developer. I'm usually free after 6 PM..."
+                      />
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8, fontStyle: 'italic' }}>
+                        This info helps the AI represent you accurately in all chats.
+                      </div>
                     </div>
                   </section>
                 </>

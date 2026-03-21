@@ -11,7 +11,7 @@ import { Account } from './models/Account';
 
 const app = express();
 const httpServer = createServer(app);
-const io = new SocketIO(httpServer, { cors: { origin: '*' } });
+export const io = new SocketIO(httpServer, { cors: { origin: '*' } });
 
 app.use(cors());
 app.use(express.json());
@@ -19,9 +19,14 @@ app.use(express.json());
 let aiService: ProviderManager | null = null;
 let refreshQrHandler: ((sessionId: string) => Promise<void>) | null = null;
 let logoutHandler: ((sessionId: string) => Promise<void>) | null = null;
+let createAccountHandler: ((sessionId: string) => Promise<void>) | null = null;
 
 export function registerLogoutHandler(handler: (sessionId: string) => Promise<void>): void {
   logoutHandler = handler;
+}
+
+export function registerCreateAccountHandler(handler: (sessionId: string) => Promise<void>): void {
+  createAccountHandler = handler;
 }
 
 
@@ -61,6 +66,37 @@ app.get('/api/accounts', async (_req, res) => {
   res.json(accounts);
 });
 
+app.post('/api/accounts', async (req, res) => {
+  let { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+
+  sessionId = sessionId.trim();
+  if (!/^[a-zA-Z0-0_-]+$/.test(sessionId)) {
+    return res.status(400).json({ error: 'Invalid sessionId. Use only letters, numbers, underscores, and hyphens.' });
+  }
+
+  try {
+    const existing = await Account.findOne({ sessionId });
+    if (existing) return res.status(400).json({ error: 'Account already exists' });
+
+    // Create a shell account
+    await Account.create({
+      sessionId,
+      status: 'starting',
+      provider: 'ollama',
+      lastActive: new Date()
+    });
+
+    if (createAccountHandler) {
+      await createAccountHandler(sessionId);
+    }
+
+    res.json({ ok: true, sessionId });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create account' });
+  }
+});
+
 app.get('/api/status', async (req, res) => {
   const { accountId } = req.query;
   const acc = await Account.findOne({ sessionId: accountId as string });
@@ -74,6 +110,7 @@ app.get('/api/status', async (req, res) => {
     availableModels: models,
     provider: acc?.provider || 'ollama',
     phoneNumber: acc?.phoneNumber || 'Not Linked',
+    bio: acc?.bio || '',
     lastActive: acc?.lastActive || null
   });
 });
@@ -203,10 +240,16 @@ app.post('/api/provider', async (req, res) => {
 });
 
 app.post('/api/config', async (req, res) => {
-  const { apiKey, accountId } = req.body as { apiKey?: string; accountId?: string };
-  if (!apiKey || !accountId) return res.status(400).json({ error: 'apiKey and accountId are required' });
+  const { apiKey, accountId, bio } = req.body as { apiKey?: string; accountId?: string; bio?: string };
+  console.log(`[API] /api/config: accountId=${accountId}, bio=${bio}, apiKey=${apiKey ? '***' : 'none'}`);
   
-  await Account.findOneAndUpdate({ sessionId: accountId }, { apiKey });
+  if (!accountId) return res.status(400).json({ error: 'accountId is required' });
+  
+  const update: any = {};
+  if (apiKey !== undefined) update.apiKey = apiKey;
+  if (bio !== undefined) update.bio = bio;
+  
+  await Account.findOneAndUpdate({ sessionId: accountId }, update);
   return res.json({ ok: true });
 });
 
@@ -225,20 +268,54 @@ app.get('/api/contact-prompt/:id', async (req, res) => {
   if (!accountId) return res.status(400).json({ error: 'accountId required' });
   
   const data = await Contact.findOne({ accountId, contactId: id });
-  return res.json(data || { prompt: '', context: '' });
+  return res.json(data || { prompt: '', context: '', isAiEnabled: true, chatStyle: 'friendly' });
 });
 
 app.post('/api/contact-prompt', async (req, res) => {
-  const { id, prompt, context, accountId, name } = req.body as { id?: string; prompt?: string; context?: string; accountId?: string; name?: string };
+  const { id, prompt, context, accountId, name, isAiEnabled, chatStyle } = req.body;
   if (!id || !accountId) return res.status(400).json({ error: 'id and accountId are required' });
   
   await Contact.findOneAndUpdate(
     { accountId, contactId: id },
-    { prompt: prompt ?? '', context: context ?? '', name: name ?? '' },
+    { 
+      prompt: prompt ?? '', 
+      context: context ?? '', 
+      name: name ?? '',
+      isAiEnabled: isAiEnabled ?? true,
+      chatStyle: chatStyle ?? 'friendly'
+    },
     { upsert: true }
   );
   
   return res.json({ ok: true });
+});
+
+app.post('/api/chat/approve', async (req, res) => {
+  const { chatId, text } = req.body;
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+
+  try {
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ error: 'Chat not found' });
+
+    // Mark as approved
+    chat.reply = text || chat.draftReply;
+    chat.needsApproval = false;
+    chat.isApproved = true;
+    await chat.save();
+
+    // Trigger WhatsApp send via socket or handler
+    io.emit('send_whatsapp_reply', { 
+      accountId: chat.accountId, 
+      to: chat.from, 
+      body: chat.reply,
+      chatId: chat._id 
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Approval failed' });
+  }
 });
 
 // ── Socket.io ──────────────────────────────────────────────────────────────
@@ -276,7 +353,7 @@ export async function updateAccountPhone(sessionId: string, phoneNumber: string)
   );
 }
 
-export async function broadcastMessage(accountId: string, entry: { from: string; body: string; reply: string; model: string }): Promise<void> {
+export async function broadcastMessage(accountId: string, entry: { from: string; body: string; reply: string; model: string; needsApproval?: boolean; draftReply?: string }): Promise<void> {
   const full = new Chat({ ...entry, accountId, ts: new Date() });
   await full.save();
   

@@ -4,8 +4,11 @@ const ChatSchema = new mongoose.Schema({
   accountId: { type: String, required: true },
   from: { type: String, required: true },
   body: { type: String, required: true },
-  reply: { type: String, required: true },
+  reply: { type: String, default: '' },
   model: { type: String, required: true },
+  needsApproval: { type: Boolean, default: false },
+  isApproved: { type: Boolean, default: false },
+  draftReply: { type: String, default: '' },
   ts: { type: Date, default: Date.now }
 });
 

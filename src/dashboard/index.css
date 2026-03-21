@@ -281,3 +281,64 @@ input:focus {
   min-width: 18px;
   text-align: center;
 }
+/* Toggle Switch */
+.toggle {
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 16px;
+  height: 16px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: var(--transition);
+}
+
+.toggle.active {
+  background: var(--primary);
+}
+
+.toggle.active::after {
+  left: 24px;
+  background: var(--bg-dark);
+}
+
+/* Approval UI */
+.approval-banner {
+  align-self: flex-start;
+  max-width: 80%;
+  background: rgba(245, 158, 11, 0.05);
+  border: 1px dashed var(--amber);
+  border-radius: 20px;
+  border-bottom-left-radius: 4px;
+  padding: 20px;
+  margin: 10px 0;
+}
+
+.draft-box {
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-main);
+}
+
+.btn-outline:hover {
+  background: var(--border);
+  color: var(--primary);
+}

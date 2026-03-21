@@ -7,6 +7,8 @@ const ContactSchema = new mongoose.Schema({
   pushname:   { type: String, default: '' },
   prompt:     { type: String, default: '' },
   context:    { type: String, default: '' },
+  isAiEnabled: { type: Boolean, default: true },
+  chatStyle:  { type: String, default: 'friendly' },
   // ✅ Task 4.3 — Track recency for sorting contact list by most recent activity
   lastMessageAt: { type: Date, default: null }
 });
