@@ -75,7 +75,8 @@ export default function App() {
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [schema, setSchema] = useState<any>(null);
   const [systemStatus, setSystemStatus] = useState<any>(null);
-  
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   // Local state for editing contact context
   const [editPrompt, setEditPrompt] = useState('');
   const [editContext, setEditContext] = useState('');
@@ -127,9 +128,9 @@ export default function App() {
   useEffect(() => {
     const sock = io(API);
     socketRef.current = sock;
-    
+
     sock.on('connect', () => console.log('[Socket] Connected to backend'));
-    
+
     return () => {
       sock.disconnect();
     };
@@ -145,15 +146,15 @@ export default function App() {
 
       if (entry.accountId === selectedAccountId) {
         setMessages((prev) => [...prev, entry]);
-        
+
         setContacts((prev) => {
           const exists = prev.find(c => c.contactId === entry.from);
           if (exists) {
             const isSelected = selectedContact?.contactId === entry.from;
-            return prev.map(c => c.contactId === entry.from ? { 
-              ...c, 
+            return prev.map(c => c.contactId === entry.from ? {
+              ...c,
               ...contact,
-              unreadCount: isSelected ? 0 : (c.unreadCount || 0) + 1 
+              unreadCount: isSelected ? 0 : (c.unreadCount || 0) + 1
             } : c);
           }
           return [{ ...(contact || { contactId: entry.from }), unreadCount: 1 }, ...prev];
@@ -170,20 +171,20 @@ export default function App() {
         const existingIndex = prev.findIndex((account) => account.sessionId === sessionId);
         const nextAccount: WhatsAppAccount = existingIndex >= 0
           ? {
-              ...prev[existingIndex],
-              status,
-              qrCode: qr ?? null,
-              lastActive: new Date().toISOString()
-            }
+            ...prev[existingIndex],
+            status,
+            qrCode: qr ?? null,
+            lastActive: new Date().toISOString()
+          }
           : {
-              sessionId,
-              status,
-              provider: 'ollama',
-              model: '',
-              phoneNumber: 'Not Linked',
-              qrCode: qr ?? null,
-              lastActive: new Date().toISOString()
-            };
+            sessionId,
+            status,
+            provider: 'ollama',
+            model: '',
+            phoneNumber: 'Not Linked',
+            qrCode: qr ?? null,
+            lastActive: new Date().toISOString()
+          };
 
         if (existingIndex === -1) return [nextAccount, ...prev];
         return prev.map((account, index) => index === existingIndex ? nextAccount : account);
@@ -252,7 +253,7 @@ export default function App() {
         name: editName
       })
     });
-    
+
     // Refresh contact in list
     setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { ...c, name: editName, prompt: editPrompt, context: editContext } : c));
     alert('Contact details saved!');
@@ -263,7 +264,7 @@ export default function App() {
       setEditPrompt(selectedContact.prompt || '');
       setEditContext(selectedContact.context || '');
       setEditName(selectedContact.name || '');
-      
+
       // Clear unread count locally
       setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { ...c, unreadCount: 0 } : c));
     }
@@ -271,8 +272,19 @@ export default function App() {
 
   const connectWhatsApp = async () => {
     if (!selectedAccountId) return;
-    await fetch(`${API}/api/refresh-qr`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: selectedAccountId }) });
-    alert('QR refresh request sent. A fresh QR code will appear shortly.');
+    setIsRefreshing(true);
+    try {
+      await fetch(`${API}/api/refresh-qr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: selectedAccountId })
+      });
+      alert('QR refresh request sent successfully. A fresh QR code will appear below once the bot restarts (usually takes 5-10 seconds).');
+    } catch (err) {
+      alert('Failed to send QR refresh request. Please check if the bot server is running.');
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // New: Sync messages manually
@@ -306,18 +318,18 @@ export default function App() {
         <div className="logo">AI</div>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
           {accounts.map(acc => (
-            <button 
-              key={acc.sessionId} 
-              onClick={() => setSelectedAccountId(acc.sessionId)} 
+            <button
+              key={acc.sessionId}
+              onClick={() => setSelectedAccountId(acc.sessionId)}
               style={{ position: 'relative', background: 'transparent', border: 'none', cursor: 'pointer' }}
             >
-              <div style={{ 
+              <div style={{
                 width: 52, height: 52, borderRadius: 16, border: selectedAccountId === acc.sessionId ? '2px solid #38bdf8' : 'none',
                 background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24
               }}>🤖</div>
-              <div style={{ 
-                position: 'absolute', bottom: 0, right: 0, width: 14, height: 14, borderRadius: '50%', 
-                background: STATUS_COLOR[acc.status] || '#94a3b8', border: '2px solid #0f172a' 
+              <div style={{
+                position: 'absolute', bottom: 0, right: 0, width: 14, height: 14, borderRadius: '50%',
+                background: STATUS_COLOR[acc.status] || '#94a3b8', border: '2px solid #0f172a'
               }} />
             </button>
           ))}
@@ -340,8 +352,8 @@ export default function App() {
               </div>
               <div style={{ overflowY: 'auto', flex: 1 }}>
                 {contacts.map(c => (
-                  <button 
-                    key={c.contactId} 
+                  <button
+                    key={c.contactId}
                     className={`contact-item ${selectedContact?.contactId === c.contactId ? 'active' : ''}`}
                     onClick={() => setSelectedContact(c)}
                   >
@@ -384,9 +396,9 @@ export default function App() {
                   <section>
                     <div className="panel-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       Conversation Summary
-                      <button 
-                        onClick={() => fetchSummary(selectedContact.contactId)} 
-                        className="btn-primary" 
+                      <button
+                        onClick={() => fetchSummary(selectedContact.contactId)}
+                        className="btn-primary"
                         style={{ padding: '4px 8px', fontSize: 10, borderRadius: 6, margin: 0 }}
                       >
                         🔄 Refresh
@@ -406,16 +418,16 @@ export default function App() {
                       </div>
                       <div style={{ marginBottom: 16 }}>
                         <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>USER CONTEXT</label>
-                        <textarea 
-                          rows={3} value={editContext} onChange={e => setEditContext(e.target.value)} 
-                          placeholder="e.g. This is the CEO of Acme Inc..." 
+                        <textarea
+                          rows={3} value={editContext} onChange={e => setEditContext(e.target.value)}
+                          placeholder="e.g. This is the CEO of Acme Inc..."
                         />
                       </div>
                       <div>
                         <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>CUSTOM AI INSTRUCTIONS</label>
-                        <textarea 
-                          rows={4} value={editPrompt} onChange={e => setEditPrompt(e.target.value)} 
-                          placeholder="e.g. Always be very formal with this person..." 
+                        <textarea
+                          rows={4} value={editPrompt} onChange={e => setEditPrompt(e.target.value)}
+                          placeholder="e.g. Always be very formal with this person..."
                         />
                       </div>
                       <button className="btn-primary" style={{ width: '100%', marginTop: 20 }} onClick={saveContactDetails}>Save Changes</button>
@@ -510,13 +522,13 @@ export default function App() {
                   <h3 style={{ fontSize: 18, marginBottom: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
                     <span>🧠</span> AI Service Provider
                   </h3>
-                  
+
                   <div style={{ marginBottom: 24 }}>
                     <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 12 }}>ACTIVE PROVIDER</label>
                     <div style={{ display: 'flex', gap: 12 }}>
                       {['ollama', 'openai'].map(p => (
-                        <button 
-                          key={p} 
+                        <button
+                          key={p}
                           className={`btn-primary ${status.provider === p ? '' : 'btn-outline'}`}
                           style={{ flex: 1, padding: '12px', background: status.provider === p ? 'var(--primary)' : 'transparent' }}
                           onClick={() => fetch(`${API}/api/provider`, {
@@ -533,7 +545,7 @@ export default function App() {
 
                   <div style={{ marginBottom: 24 }}>
                     <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>MODEL SELECTION</label>
-                    <select 
+                    <select
                       value={status.model}
                       style={{ width: '100%', padding: '12px', borderRadius: 12, background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-main)' }}
                       onChange={(e) => fetch(`${API}/api/model`, {
@@ -549,7 +561,7 @@ export default function App() {
                   {status.provider === 'openai' && (
                     <div>
                       <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>OPENAI API KEY</label>
-                      <input 
+                      <input
                         type="password"
                         placeholder="sk-..."
                         style={{ width: '100%' }}
@@ -571,7 +583,7 @@ export default function App() {
                   <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
                     {connectionSummary}
                   </p>
-                  
+
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px', background: 'var(--bg-dark)', borderRadius: 12 }}>
                       <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Status</span>
@@ -603,9 +615,16 @@ export default function App() {
                   )}
 
                   <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
-                    <button onClick={connectWhatsApp} className="btn-primary" style={{ flex: 1 }}>{isConnected ? '🔄 Reconnect / New QR' : '🔗 Connect WhatsApp'}</button>
-                    <button 
-                      className="btn-primary" 
+                    <button
+                      onClick={connectWhatsApp}
+                      className={`btn-primary ${isRefreshing ? 'loading' : ''}`}
+                      style={{ flex: 1, opacity: isRefreshing ? 0.7 : 1, cursor: isRefreshing ? 'not-allowed' : 'pointer' }}
+                      disabled={isRefreshing}
+                    >
+                      {isRefreshing ? '⌛ Sending Request...' : (isConnected ? '🔄 Reconnect / New QR' : '🔗 Connect WhatsApp')}
+                    </button>
+                    <button
+                      className="btn-primary"
                       style={{ flex: 1, background: '#ef4444' }}
                       onClick={async () => {
                         if (!confirm('Logout and unlink this WhatsApp account?')) return;
@@ -625,18 +644,18 @@ export default function App() {
                   <h3 style={{ fontSize: 18, marginBottom: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
                     <span>🎨</span> Appearance
                   </h3>
-                  
+
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <div style={{ fontWeight: 700 }}>Theme Mode</div>
                       <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Switch between light and dark interface</div>
                     </div>
                     <div style={{ display: 'flex', background: 'var(--bg-dark)', padding: 4, borderRadius: 12 }}>
-                      <button 
+                      <button
                         onClick={() => setTheme('dark')}
                         style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: theme === 'dark' ? 'var(--bg-card)' : 'transparent', color: theme === 'dark' ? 'var(--primary)' : 'var(--text-muted)', cursor: 'pointer' }}
                       >🌙 Dark</button>
-                      <button 
+                      <button
                         onClick={() => setTheme('light')}
                         style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: theme === 'light' ? 'var(--bg-card)' : 'transparent', color: theme === 'light' ? 'var(--primary)' : 'var(--text-muted)', cursor: 'pointer' }}
                       >☀️ Light</button>

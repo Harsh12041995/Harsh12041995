@@ -237,7 +237,8 @@ body {
   margin-bottom: 24px;
 }
 
-textarea, input {
+textarea,
+input {
   width: 100%;
   background: var(--bg-dark);
   border: 1px solid var(--border);
@@ -249,7 +250,8 @@ textarea, input {
   transition: border-color 0.2s;
 }
 
-textarea:focus, input:focus {
+textarea:focus,
+input:focus {
   border-color: var(--primary);
 }
 
