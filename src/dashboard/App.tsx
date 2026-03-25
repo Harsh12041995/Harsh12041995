@@ -16,6 +16,8 @@ interface Contact {
   pushname?: string;
   prompt?: string;
   context?: string;
+  category?: string;
+  summary?: string;
   unreadCount?: number;
   isAiEnabled?: boolean;
   chatStyle?: string;
@@ -39,6 +41,11 @@ interface BotStatus {
   availableModels: string[];
   provider: 'ollama' | 'openai';
   phoneNumber?: string;
+  apiKey?: string;
+  serperKey?: string;
+  newsKey?: string;
+  globalContext?: string;
+  knowledgeBase?: string;
   qr?: string | null;
   bio?: string;
   lastActive?: string | null;
@@ -88,6 +95,7 @@ export default function App() {
   const [editAiEnabled, setEditAiEnabled] = useState(true);
   const [editChatStyle, setEditChatStyle] = useState('friendly');
   const [editBio, setEditBio] = useState('');
+  const [editCategory, setEditCategory] = useState('Casual');
 
   const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -268,7 +276,8 @@ export default function App() {
         context: editContext,
         name: editName,
         isAiEnabled: editAiEnabled,
-        chatStyle: editChatStyle
+        chatStyle: editChatStyle,
+        category: editCategory
       })
     });
 
@@ -297,8 +306,8 @@ export default function App() {
     }
 
     // Refresh contact in list
-    setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { 
-      ...c, name: editName, prompt: editPrompt, context: editContext, isAiEnabled: editAiEnabled, chatStyle: editChatStyle 
+    setContacts(prev => prev.map(c => c.contactId === (selectedContact as any).contactId ? { 
+      ...c, name: editName, prompt: editPrompt, context: editContext, isAiEnabled: editAiEnabled, chatStyle: editChatStyle, category: editCategory 
     } : c));
     alert('Details saved!');
   };
@@ -318,6 +327,8 @@ export default function App() {
       setEditName(selectedContact.name || '');
       setEditAiEnabled(selectedContact.isAiEnabled ?? true);
       setEditChatStyle(selectedContact.chatStyle || 'friendly');
+      setEditCategory(selectedContact.category || 'Casual');
+      setSummary(selectedContact.summary || 'No summary available.');
 
       // Clear unread count locally
       setContacts(prev => prev.map(c => c.contactId === selectedContact.contactId ? { ...c, unreadCount: 0 } : c));
@@ -567,6 +578,21 @@ export default function App() {
                         />
                       </div>
                       <div style={{ marginTop: 16 }}>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>CONTACT CATEGORY (SCENARIO)</label>
+                        <select 
+                          value={editCategory} 
+                          onChange={e => setEditCategory(e.target.value)}
+                          style={{ width: '100%', padding: '8px', borderRadius: 10, background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-main)', marginBottom: 12 }}
+                        >
+                          <option value="Casual">Casual & Personal</option>
+                          <option value="Professional">Professional / Work</option>
+                          <option value="Client">Client / Business</option>
+                          <option value="Friend">Close Friend</option>
+                          <option value="Family">Family Member</option>
+                        </select>
+                      </div>
+
+                      <div style={{ marginTop: 16 }}>
                         <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>CHAT STYLE</label>
                         <select 
                           value={editChatStyle} 
@@ -736,6 +762,69 @@ export default function App() {
                       />
                     </div>
                   )}
+                </div>
+
+                {/* Tool Configuration */}
+                <div className="card">
+                  <h3 style={{ fontSize: 18, marginBottom: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span>🛠️</span> Tool Configuration
+                  </h3>
+                  
+                  <div style={{ marginBottom: 20 }}>
+                    <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>SERPER.DEV KEY (Google Search)</label>
+                    <input
+                      type="password"
+                      placeholder="Paste Serper API key..."
+                      style={{ width: '100%' }}
+                      onChange={(e) => fetch(`${API}/api/config`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ accountId: selectedAccountId, serperKey: e.target.value })
+                      })}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>NEWSAPI.ORG KEY (Latest News)</label>
+                    <input
+                      type="password"
+                      placeholder="Paste NewsAPI key..."
+                      style={{ width: '100%' }}
+                      onChange={(e) => fetch(`${API}/api/config`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ accountId: selectedAccountId, newsKey: e.target.value })
+                      })}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 20 }}>
+                    <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>GLOBAL AI CONTEXT & INSTRUCTIONS</label>
+                    <textarea
+                      placeholder="e.g. You are a professional assistant..."
+                      style={{ width: '100%', minHeight: 80, background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, color: 'var(--text-primary)' }}
+                      defaultValue={status.globalContext}
+                      onBlur={(e) => fetch(`${API}/api/config`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ accountId: selectedAccountId, globalContext: e.target.value })
+                      })}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>KNOWLEDGE BASE (Facts about you)</label>
+                    <textarea
+                      placeholder="e.g. Harsh is a Software Engineer..."
+                      style={{ width: '100%', minHeight: 120, background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, color: 'var(--text-primary)' }}
+                      defaultValue={status.knowledgeBase}
+                      onBlur={(e) => fetch(`${API}/api/config`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ accountId: selectedAccountId, knowledgeBase: e.target.value })
+                      })}
+                    />
+                  </div>
                 </div>
 
                 {/* WhatsApp Account Management */}

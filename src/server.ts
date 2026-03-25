@@ -16,10 +16,13 @@ export const io = new SocketIO(httpServer, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json());
 
+export type ApprovalHandler = (accountId: string, to: string, body: string) => Promise<void>;
+
 let aiService: ProviderManager | null = null;
 let refreshQrHandler: ((sessionId: string) => Promise<void>) | null = null;
 let logoutHandler: ((sessionId: string) => Promise<void>) | null = null;
 let createAccountHandler: ((sessionId: string) => Promise<void>) | null = null;
+let approvalHandler: ApprovalHandler | null = null;
 
 export function registerLogoutHandler(handler: (sessionId: string) => Promise<void>): void {
   logoutHandler = handler;
@@ -27,6 +30,10 @@ export function registerLogoutHandler(handler: (sessionId: string) => Promise<vo
 
 export function registerCreateAccountHandler(handler: (sessionId: string) => Promise<void>): void {
   createAccountHandler = handler;
+}
+
+export function registerApprovalHandler(handler: ApprovalHandler): void {
+  approvalHandler = handler;
 }
 
 
@@ -109,6 +116,11 @@ app.get('/api/status', async (req, res) => {
     model: acc?.model || aiService?.getModel() || 'unknown',
     availableModels: models,
     provider: acc?.provider || 'ollama',
+    apiKey: acc?.apiKey || '',
+    serperKey: acc?.serperKey || '',
+    newsKey: acc?.newsKey || '',
+    globalContext: acc?.globalContext || '',
+    knowledgeBase: acc?.knowledgeBase || '',
     phoneNumber: acc?.phoneNumber || 'Not Linked',
     bio: acc?.bio || '',
     lastActive: acc?.lastActive || null
@@ -240,13 +252,21 @@ app.post('/api/provider', async (req, res) => {
 });
 
 app.post('/api/config', async (req, res) => {
-  const { apiKey, accountId, bio } = req.body as { apiKey?: string; accountId?: string; bio?: string };
+  const { apiKey, serperKey, newsKey, knowledgeBase, globalContext, accountId, bio } = req.body as { 
+    apiKey?: string; serperKey?: string; newsKey?: string; 
+    knowledgeBase?: string; globalContext?: string; 
+    accountId?: string; bio?: string 
+  };
   console.log(`[API] /api/config: accountId=${accountId}, bio=${bio}, apiKey=${apiKey ? '***' : 'none'}`);
   
   if (!accountId) return res.status(400).json({ error: 'accountId is required' });
   
   const update: any = {};
   if (apiKey !== undefined) update.apiKey = apiKey;
+  if (serperKey !== undefined) update.serperKey = serperKey;
+  if (newsKey !== undefined) update.newsKey = newsKey;
+  if (knowledgeBase !== undefined) update.knowledgeBase = knowledgeBase;
+  if (globalContext !== undefined) update.globalContext = globalContext;
   if (bio !== undefined) update.bio = bio;
   
   await Account.findOneAndUpdate({ sessionId: accountId }, update);
@@ -272,7 +292,7 @@ app.get('/api/contact-prompt/:id', async (req, res) => {
 });
 
 app.post('/api/contact-prompt', async (req, res) => {
-  const { id, prompt, context, accountId, name, isAiEnabled, chatStyle } = req.body;
+  const { id, prompt, context, accountId, name, isAiEnabled, chatStyle, category } = req.body;
   if (!id || !accountId) return res.status(400).json({ error: 'id and accountId are required' });
   
   await Contact.findOneAndUpdate(
@@ -282,7 +302,8 @@ app.post('/api/contact-prompt', async (req, res) => {
       context: context ?? '', 
       name: name ?? '',
       isAiEnabled: isAiEnabled ?? true,
-      chatStyle: chatStyle ?? 'friendly'
+      chatStyle: chatStyle ?? 'friendly',
+      category: category ?? 'Casual'
     },
     { upsert: true }
   );
@@ -305,6 +326,10 @@ app.post('/api/chat/approve', async (req, res) => {
     await chat.save();
 
     // Trigger WhatsApp send via socket or handler
+    if (approvalHandler) {
+      await approvalHandler(chat.accountId, chat.from, chat.reply);
+    }
+
     io.emit('send_whatsapp_reply', { 
       accountId: chat.accountId, 
       to: chat.from, 

@@ -12,9 +12,7 @@ export class OllamaService implements AIService {
   constructor() {
     this.client = new Ollama({ host: process.env.OLLAMA_HOST || 'http://localhost:11434' });
     this.model = process.env.OLLAMA_MODEL || 'qwen3:4b';
-    this.systemPrompt =
-      process.env.OLLAMA_SYSTEM_PROMPT ||
-      "You are a professional assistant. Maintain a human-like, warm, and helpful conversation style. Keep your replies very concise and brief. Do not provide overly long explanations unless asked.";
+    this.systemPrompt = process.env.OLLAMA_SYSTEM_PROMPT || "You are a professional assistant.";
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────

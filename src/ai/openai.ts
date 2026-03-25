@@ -10,9 +10,7 @@ export class OpenAIService implements AIService {
 
   constructor() {
     this.apiKey = process.env.OPENAI_API_KEY || null;
-    this.systemPrompt =
-      process.env.OLLAMA_SYSTEM_PROMPT ||
-      'You are a helpful WhatsApp assistant. Keep replies concise and conversational.';
+    this.systemPrompt = process.env.OLLAMA_SYSTEM_PROMPT || "You are a professional assistant.";
   }
 
   async generateReply(accountId: string, contactId: string, userMessage: string, customPrompt?: string): Promise<string> {

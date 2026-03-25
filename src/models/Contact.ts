@@ -9,6 +9,8 @@ const ContactSchema = new mongoose.Schema({
   context:    { type: String, default: '' },
   isAiEnabled: { type: Boolean, default: true },
   chatStyle:  { type: String, default: 'friendly' },
+  category:   { type: String, enum: ['Casual', 'Professional', 'Client', 'Friend', 'Family'], default: 'Casual' },
+  summary:    { type: String, default: '' },
   // ✅ Task 4.3 — Track recency for sorting contact list by most recent activity
   lastMessageAt: { type: Date, default: null }
 });

@@ -18,19 +18,58 @@ export class ProviderManager implements AIService {
   async generateReply(accountId: string, contactId: string, userMessage: string, customPrompt?: string): Promise<string> {
     const { Account } = await import('../models/Account');
     const acc = await Account.findOne({ sessionId: accountId });
+    const { ToolRouter, toolRegistry } = await import('./tools');
+    const router = new ToolRouter();
 
-    // ✅ Fix (Task 2.2): Use a local provider variable, NOT this.currentProvider,
-    // to avoid race conditions when two sessions process messages simultaneously.
+    // ── Tier 1: Regex Router (0 GPU) ──
+    const fastReply = await router.routeByRegex(userMessage);
+    if (fastReply) {
+      console.log(`[AI] Regex Router bypassed LLM for: "${userMessage}"`);
+      return fastReply;
+    }
+
     const provider: ProviderType = (acc?.provider as ProviderType) || 'ollama';
     const service = provider === 'ollama' ? this.ollama : this.openai;
 
     if (acc?.model) service.setModel(acc.model);
     if (provider === 'openai' && acc?.apiKey) {
-      // Decrypt the API key before passing it to the service
       this.openai.setApiKey(decrypt(acc.apiKey));
     }
 
-    return service.generateReply(accountId, contactId, userMessage, customPrompt);
+    // Prepare tools with context (keys)
+    const context = {
+      serperKey: acc?.serperKey ? decrypt(acc.serperKey) : undefined,
+      newsKey: acc?.newsKey ? decrypt(acc.newsKey) : undefined
+    };
+
+    // ── Tier 2: LLM Tool Selection & Execution ──
+    // Note: For now, we perform a simple tool check. In the future, we can expand
+    // this to support full multi-turn tool use if the model supports it well.
+    let response = await service.generateReply(accountId, contactId, userMessage, customPrompt);
+
+    // Basic Tool Call Detection (for Ollama Qwen3/similar)
+    // We expect the model to output something like: <call:tool_name>{"arg": "val"}</call>
+    const toolCallMatch = response.match(/<call:(\w+)>(.*?)<\/call>/s);
+    if (toolCallMatch) {
+      const [, toolName, argsJson] = toolCallMatch;
+      const tool = toolRegistry[toolName];
+      if (tool) {
+        console.log(`[AI] Tool Call: ${toolName}(${argsJson})`);
+        try {
+          const args = JSON.parse(argsJson);
+          const toolResult = await tool.execute({ ...args, apiKey: toolName === 'google_search' ? context.serperKey : context.newsKey });
+          
+          // Re-feed the tool result to the AI for a final summarized answer
+          const followUpPrompt = `${customPrompt || ''}\n\nTool Result (${toolName}): ${toolResult}\n\nBased on this result, provide a final concise answer to the user.`;
+          return await service.generateReply(accountId, contactId, `[TOOL_RESULT] ${toolResult}`, followUpPrompt);
+        } catch (err) {
+          console.error(`[AI] Tool execution failed:`, err);
+          return "I encountered an error while trying to look that up for you.";
+        }
+      }
+    }
+
+    return response;
   }
 
   async listModels(): Promise<string[]> {

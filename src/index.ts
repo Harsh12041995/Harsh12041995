@@ -10,6 +10,7 @@ import {
   registerRefreshHandler,
   registerLogoutHandler,
   registerCreateAccountHandler,
+  registerApprovalHandler,
   updateAccountStatus,
   updateAccountPhone,
   broadcastMessage,
@@ -63,6 +64,21 @@ async function init() {
     await startBot(sessionId);
   });
 
+  registerApprovalHandler(async (accountId, to, body) => {
+    console.log(`[Bot] Dashboard approved message for ${accountId} to ${to}`);
+    const client = clients.get(accountId);
+    if (client) {
+      try {
+        await client.getClient().sendMessage(to, body);
+        console.log(`[Bot - ${accountId}] Approved message sent quickly via handler.`);
+      } catch (err) {
+        console.error(`[Bot - ${accountId}] Failed to send approved message via handler:`, err);
+      }
+    } else {
+      console.error(`[Bot] No active client found for account ${accountId}`);
+    }
+  });
+
   const savedAccounts = await Account.find();
   if (savedAccounts.length === 0) {
     await startBot('primary');
@@ -78,18 +94,6 @@ async function startBot(sessionId: string) {
 
   const waClient = new WhatsAppClient(sessionId);
   clients.set(sessionId, waClient);
-
-  // Handle approvals from dashboard
-  io.on('send_whatsapp_reply', async ({ accountId, to, body }: { accountId: string; to: string; body: string }) => {
-    if (accountId === sessionId) {
-      try {
-        console.log(`[Bot - ${sessionId}] Sending approved/edited reply to ${to}`);
-        await waClient.getClient().sendMessage(to, body);
-      } catch (err) {
-        console.error(`[Bot - ${sessionId}] Failed to send approved reply:`, err);
-      }
-    }
-  });
 
   // Per-contact message queue to prevent parallel AI requests and act as rate limiter
   const messageQueues: Map<string, Promise<void>> = new Map();
@@ -159,25 +163,28 @@ async function startBot(sessionId: string) {
         }
         return;
       }
+      
+      // If it's the owner's message and NOT a command, ignore to avoid loops
+      // from synced messages/replies.
+      return;
     }
 
     if (!dbContact.isAiEnabled) return;
 
     console.log(`[Bot - ${sessionId}] ← ${pushname || from}: ${body}`);
 
-    // Construct enhanced system prompt
-    let systemPrompt = `You are representing ${account.sessionId === 'primary' ? 'Harsh' : account.sessionId}. 
-Your personality bio: ${account.bio || 'Professional and helpful.'}
-Chat style for this contact: ${dbContact.chatStyle || 'friendly'}.
-Additional context: ${dbContact.context || ''}
-${dbContact.prompt || ''}
-
-CRITICAL RULES:
-1. If the user asks for a commitment, availability, personal meeting, or specific action that isn't explicitly covered in your bio, DO NOT reply directly.
-2. Instead, prefix your response with [APPROVE] followed by a suggested draft.
-3. Example: "[APPROVE] I check with Harsh and get back to you soon."
-4. If it's a general question or greeting, reply normally.
-`;
+    // ── Optimized Context Construction ──
+    const { PromptBuilder } = await import('./ai/PromptBuilder');
+    const systemPrompt = PromptBuilder.build({
+      sessionId,
+      bio: account.bio,
+      globalContext: account.globalContext,
+      knowledgeBase: account.knowledgeBase,
+      contactContext: dbContact.context || dbContact.prompt, // Backward compatibility
+      category: dbContact.category,
+      chatStyle: dbContact.chatStyle,
+      summary: dbContact.summary
+    });
 
     const rawReply = await aiService.generateReply(sessionId, from, body, systemPrompt);
     const needsApproval = rawReply.includes('[APPROVE]');
@@ -199,11 +206,42 @@ CRITICAL RULES:
         await msg.reply(replyText);
         console.log(`[Bot - ${sessionId}] → ${from}: ${replyText}`);
         await broadcastMessage(sessionId, { from, body, reply: replyText, model: aiService.getModel() });
+
+        // ✅ Task: Auto-Summarization (Trigger every 10 messages)
+        const count = await ChatModel.countDocuments({ accountId: sessionId, from });
+        if (count > 0 && count % 10 === 0) {
+          summarizeConversation(sessionId, from).catch(e => console.error(`[Summary] Failed:`, e));
+        }
       }
     } catch (err) {
       console.error(`[Bot - ${sessionId}] Failed to process reply:`, err);
     }
   };
+
+  /**
+   * Summarizes the conversation for a contact and stores it in the Contact model.
+   * This provides "long-term memory" even when history is trimmed.
+   */
+  async function summarizeConversation(accountId: string, contactId: string) {
+    console.log(`[Bot - ${accountId}] Updating interaction summary for ${contactId}...`);
+    const history = await ChatModel.find({ accountId, from: contactId }).sort({ ts: -1 }).limit(20);
+    const text = history.reverse().map(m => `User: ${m.body}\nAssistant: ${m.reply}`).join('\n');
+    
+    const summaryPrompt = `Summarize the key points of this conversation in 2-3 concise bullet points. 
+Focus on established facts, preferences, or unresolved questions.
+Keep it strictly under 50 words.
+
+Conversation:
+${text}`;
+
+    const newSummary = await aiService.generateReply(accountId, contactId, "[SYSTEM_INTERNAL] Summarize interaction", summaryPrompt);
+    
+    await ContactModel.findOneAndUpdate(
+      { accountId, contactId },
+      { $set: { summary: newSummary.replace('[APPROVE]', '').trim() } }
+    );
+    console.log(`[Bot - ${accountId}] Summary updated for ${contactId}.`);
+  }
 
   // ✅ Task 3.3 — Rate-limiting message queue: processes one message per contact at a time,
   // preventing parallel AI requests that could overload Ollama or hit OpenAI rate limits.
