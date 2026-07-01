@@ -1,168 +1,67 @@
-# WhatsApp AI Bot — Local Ollama Edition
+# Hi there, I'm Harsh Sahu 👋
 
-Auto-replies to WhatsApp messages using a **fully local Ollama model**.  
-No API keys. No rate limits. No cloud. Runs entirely on your machine.
-
----
-
-## How It Works
-
-```
-WhatsApp (your phone)
-     ↕  WebSocket
-whatsapp-web.js          ← manages WA Web session, emits typed events
-     ↓  message event
-Bot Core (src/index.ts)  ← receives Message object, calls Ollama
-     ↓  chat()
-Ollama (local)           ← qwen3:4b / llama3.2 / mistral / etc.
-     ↓  reply text
-msg.reply()              ← sends response back to WhatsApp chat
-     ↓  broadcast
-Express + Socket.io      ← pushes live update to dashboard
-     ↓
-React Dashboard          ← http://localhost:5173
-```
+### Full-Stack Developer | AI & Automation Enthusiast | Building real things with code
 
 ---
 
-## Prerequisites
+## 🚀 About Me
 
-| Requirement | Install |
-|---|---|
-| Node.js 18+ | https://nodejs.org |
-| Ollama | https://ollama.com/download |
+I'm a developer passionate about building **AI-powered tools**, **SaaS platforms**, and **automation systems**. I love working at the intersection of modern web technologies and artificial intelligence — turning complex ideas into clean, working products.
 
----
+- 🤖 Currently building: AI agents, local LLM integrations & WhatsApp automation
+- - 🌐 Full-stack with **TypeScript**, **React**, **Node.js**, and **Python**
+  - - 📱 Mobile development with **Flutter**
+    - - 🧠 Exploring: LangChain, RAG pipelines, Ollama, and agentic AI systems
+      - - 💼 Building SaaS products from scratch — frontend to backend to deployment
+        - - 📫 Reach me: **er.sahu.harsh@gmail.com**
+         
+          - ---
 
-## Quick Start
+          ## 🛠️ Tech Stack
 
-### 1. Install Ollama and pull a model
+          **Languages**
+          ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)
+          ![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
+          ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black)
+          ![Dart](https://img.shields.io/badge/Dart-0175C2?style=flat&logo=dart&logoColor=white)
 
-```bash
-# Install Ollama, then pull your chosen model
-ollama pull qwen3:4b        # fast, ~2GB RAM  ← recommended
-# ollama pull llama3.2      # balanced, ~5GB RAM
-# ollama pull mistral       # strong reasoning, ~4GB RAM
-# ollama pull gemma3:4b     # Google compact, ~3GB RAM
+          **Frontend**
+          ![React](https://img.shields.io/badge/React-61DAFB?style=flat&logo=react&logoColor=black)
+          ![Flutter](https://img.shields.io/badge/Flutter-02569B?style=flat&logo=flutter&logoColor=white)
+          ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=flat&logo=html5&logoColor=white)
+          ![Vite](https://img.shields.io/badge/Vite-646CFF?style=flat&logo=vite&logoColor=white)
 
-# Verify it works
-ollama run qwen3:4b "Say hello"
-```
+          **Backend & AI**
+          ![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white)
+          ![Express](https://img.shields.io/badge/Express-000000?style=flat&logo=express&logoColor=white)
+          ![Ollama](https://img.shields.io/badge/Ollama-000000?style=flat&logo=ollama&logoColor=white)
+          ![LangChain](https://img.shields.io/badge/LangChain-1C3C3C?style=flat&logo=langchain&logoColor=white)
 
-### 2. Install dependencies
+          **Tools**
+          ![Git](https://img.shields.io/badge/Git-F05032?style=flat&logo=git&logoColor=white)
+          ![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat&logo=github&logoColor=white)
+          ![VS Code](https://img.shields.io/badge/VS%20Code-007ACC?style=flat&logo=visualstudiocode&logoColor=white)
 
-```bash
-npm install
-`
+          ---
 
-### 3. Configure `.env`
+          ## 🔥 Featured Projects
 
-```bash
-cp .env.example .env   # or edit .env directly
-```
+          | Project | Description | Stack |
+          |---|---|---|
+          | 🤖 **WhatsApp AI Bot** | Auto-replies using local Ollama LLMs — no API keys, runs on your machine | TypeScript, Node.js, Ollama |
+          | 🧠 **AI Personal Assistant** | Intelligent assistant with tool use and memory | TypeScript, AI |
+          | ⚖️ **Legal.ai** | AI-powered legal solution platform | Python |
+          | 💼 **AMS SaaS Frontend** | Full-featured SaaS application frontend | TypeScript, React |
+          | 💍 **MIE App** | Personal Matrimonial Intelligence Engine mobile app | Flutter, Dart |
+          | 🌿 **Renewable Energy AI** | AI projects for renewable energy domain | Python |
 
-Key settings:
-```
-OLLAMA_MODEL=qwen3:4b          # change to any model you've pulled
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_SYSTEM_PROMPT=You are a helpful WhatsApp assistant. Keep replies concise.
-```
+          ---
 
-### 4. Build
+          ## 📊 GitHub Stats
 
-```bash
-npm run build
-```
+          ![Harsh's GitHub Stats](https://github-readme-stats.vercel.app/api?username=Harsh12041995&show_icons=true&theme=dark&hide_border=true)
+          ![Top Languages](https://github-readme-stats.vercel.app/api/top-langs/?username=Harsh12041995&layout=compact&theme=dark&hide_border=true)
 
-### 5. Start everything (2 terminals)
+          ---
 
-**Terminal 1 — Bot & API**
-```bash
-npm run bot
-```
-
-**Terminal 2 — Dashboard**
-```bash
-npm run dashboard
-```
-
-On first run, a QR code appears in Terminal 3.  
-Scan it once with your WhatsApp app → session is saved → **never scan again**.
-
----
-
-## Switching Models
-
-### Via Dashboard (runtime, no restart needed)
-Open http://localhost:5173 → click any available model button.
-
-### Via API
-```bash
-curl -X POST http://localhost:3001/api/model \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3.2"}'
-```
-
-### Via .env (persistent)
-Change `OLLAMA_MODEL=llama3.2` and restart.
-
----
-
-## Available Local Models
-
-```bash
-ollama list                    # see what you have pulled
-ollama pull <model>            # pull a new model
-```
-
-| Model | RAM | Speed | Good for |
-|---|---|---|---|
-| `qwen3:4b` | ~2GB | Fast | General chat, multilingual |
-| `llama3.2` | ~5GB | Medium | Balanced quality/speed |
-| `mistral` | ~4GB | Medium | Reasoning, Q&A |
-| `gemma3:4b` | ~3GB | Fast | Conversation |
-| `phi4-mini` | ~2.5GB | Fast | Compact, efficient |
-
----
-
-## File Structure
-
-```
-src/
-  index.ts              ← entry point, wires everything together
-  server.ts             ← Express + Socket.io API
-  whatsapp/
-    client.ts           ← whatsapp-web.js wrapper (event-based, zero selectors)
-  ai/
-    ollama.ts           ← Ollama service with per-contact conversation history
-  dashboard/
-    App.tsx             ← React dashboard with live feed + model switcher
-    main.tsx
-    index.css
-```
-
----
-
-## Troubleshooting
-
-| Error | Fix |
-|---|---|
-| QR appears on every restart | Keep `.wwebjs_auth/` on disk, don't delete it |
-| `model not found` error | Run `ollama pull <model>` first |
-| `ECONNREFUSED` to Ollama | Run `ollama serve` in a separate terminal |
-| No replies from bot | Check `msg.fromMe` filter; confirm Ollama is running |
-| Puppeteer launch error | Add `--no-sandbox` flag (already set in client.ts) |
-
-### Reset WhatsApp session
-```bash
-rm -rf .wwebjs_auth/
-npm start   # scan QR again
-```
-
----
-
-## Security Notes
-
-- **Never commit `.wwebjs_auth/`** — it contains your WhatsApp session credentials.
-- **Never commit `.env`** — both are in `.gitignore`.
-- The bot replies to **all incoming messages** by default. Add contact filtering in `src/index.ts` if needed.
+          *"New way to shift."* 🚀
