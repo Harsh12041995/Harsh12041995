@@ -6,7 +6,7 @@
 
 ## 🚀 About Me
 
-I'm a developer passionate about building **AI-powered tools**, **SaaS platforms**, and **automation systems**. I love working at the intersection of modern web technologies and artificial intelligence — turning complex ideas into clean, working products.
+I'm a Business anlyst by day and a Ai developer by passion ,passionate about building **AI-powered tools**, **SaaS platforms**, and **automation systems**. I love working at the intersection of modern web technologies and artificial intelligence — turning complex ideas into clean, working products.
 
 - 🤖 Currently building: AI agents, local LLM integrations & WhatsApp automation
 - - 🌐 Full-stack with **TypeScript**, **React**, **Node.js**, and **Python**
@@ -41,6 +41,9 @@ I'm a developer passionate about building **AI-powered tools**, **SaaS platforms
           ![Git](https://img.shields.io/badge/Git-F05032?style=flat&logo=git&logoColor=white)
           ![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat&logo=github&logoColor=white)
           ![VS Code](https://img.shields.io/badge/VS%20Code-007ACC?style=flat&logo=visualstudiocode&logoColor=white)
+          jira 
+          mcps 
+          
 
           ---
 
