@@ -10,10 +10,10 @@ I'm a Product Owner  by day and a Ai developer by passion ,passionate about buil
 
 - 🤖 Currently building: AI agents, local LLM integrations & WhatsApp automation
 - - 🌐 Full-stack with **TypeScript**, **React**, **Node.js**, and **Python**
-  - - 📱 Mobile development with **Flutter**
-    - - 🧠 Exploring: LangChain, RAG pipelines, Ollama, and agentic AI systems
-      - - 💼 Building SaaS products from scratch — frontend to backend to deployment
-        - - 📫 Reach me: **er.sahu.harsh@gmail.com**
+- - 📱 Mobile development with **Flutter**
+- - 🧠 Exploring: LangChain, RAG pipelines, Ollama, and agentic AI systems
+- - 💼 Building SaaS products from scratch — frontend to backend to deployment
+   - - 📫 Reach me: **er.sahu.harsh@gmail.com**
          
           - ---
 
